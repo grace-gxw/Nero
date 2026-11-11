@@ -97,6 +97,11 @@ def json_schema_for(schema: type[BaseModel]) -> dict:
     return walk(raw)
 
 
+def _short(text: str, n: int) -> str:
+    """Pesan galat satu baris untuk log (galat skema berisi beberapa baris)."""
+    return " ".join((text or "gagal").split())[:n]
+
+
 def _validation_message(e: ValidationError) -> str:
     lines = []
     for err in e.errors()[:8]:
@@ -175,11 +180,30 @@ def _wait_for(e: LocalAIError, attempt: int) -> float:
 # --------------------------------------------------------------------------
 # Antarmuka utama
 # --------------------------------------------------------------------------
+COOLDOWN_SECONDS = 600   # provider yang baru gagal (penuh/timeout/kuota) dilewati dulu selama ini
+_cooldown: dict[tuple[str, str], float] = {}
+
+
+def reset_cooldown() -> None:
+    _cooldown.clear()
+
+
+def _order(providers: list[str], cfg: ChannelConfig, s: dict) -> list[str]:
+    """Provider yang sedang istirahat dipindah ke belakang (tetap dicoba bila yang lain juga gagal)."""
+    now = time.time()
+    fresh = [p for p in providers if _cooldown.get((p, _model_for(p, cfg, s)), 0) <= now]
+    return fresh + [p for p in providers if p not in fresh]
+
+
 def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], temperature: float, *,
                   cfg: ChannelConfig | None = None, settings: dict | None = None, allow_local: bool = True,
-                  providers: list[str] | None = None, log=None, calls: list[Call] | None = None) -> BaseModel:
+                  providers: list[str] | None = None, check=None, log=None,
+                  calls: list[Call] | None = None) -> BaseModel:
     """Isi prompts/<prompt_name>.md, minta jawaban JSON, validasi dengan `schema`, fallback antar-provider.
-    allow_local=False: provider lokal (Ollama) tidak dipakai, mis. untuk QC yang harus teliti."""
+
+    allow_local=False: provider lokal (Ollama) tidak dipakai, mis. untuk QC yang harus teliti.
+    check(hasil) -> [pesan]: pemeriksaan isi tambahan (mis. jumlah kata). Bila ada pesan, diminta perbaikan
+    sekali; bila masih ada, hasilnya tetap dikembalikan (langkah berikutnya, mis. QC, yang memutuskan)."""
     s = settings if settings is not None else common.load_settings()
     cfg = cfg or cfgmod.load_config(s)
     log = log or (lambda m: print(f"[channel] {m}"))
@@ -191,12 +215,13 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
     if not order:
         raise LLMError("Tidak ada provider AI yang boleh dipakai untuk langkah ini.", calls)
 
-    for provider in order:
+    for provider in _order(order, cfg, s):
         model = _model_for(provider, cfg, s)
         call = Call(provider, model)
         calls.append(call)
-        prompt, fixed, attempt = base, False, 0
+        prompt, fixed, checked, attempt = base, False, False, 0
         t0 = time.time()
+        server_failed = False
         while attempt < cfg.llm.max_retries:
             attempt += 1
             call.attempts = attempt
@@ -211,6 +236,7 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
                     log(f"{provider}/{model}: {e} -> coba lagi dalam {wait:.0f} dtk")
                     _sleep(wait)
                     continue
+                server_failed = True
                 break
             finally:
                 if usage:
@@ -228,12 +254,28 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
                     "errors": _validation_message(e), "previous": json.dumps(data, ensure_ascii=False)[:4000]})
                 attempt -= 1   # perbaikan skema tidak dihitung sebagai percobaan galat server
                 continue
+            problems = list(check(result) or []) if check else []
+            if problems and not checked:
+                checked = True
+                call.notes.append("isi belum memenuhi aturan, diminta perbaikan: " + "; ".join(problems))
+                log(f"LLM {prompt_name}: minta perbaikan ({'; '.join(problems)[:200]})")
+                prompt = base + "\n\n" + render_prompt("_validation_retry", {
+                    "errors": "\n".join(f"- {p}" for p in problems),
+                    "previous": json.dumps(data, ensure_ascii=False)[:6000]})
+                attempt -= 1
+                continue
+            if problems:
+                call.notes.append("masih belum sempurna: " + "; ".join(problems))
+                log(f"LLM {prompt_name}: diterima dengan catatan ({'; '.join(problems)[:200]})")
             call.ok, call.error = True, ""
             call.seconds = round(time.time() - t0, 2)
+            _cooldown.pop((provider, model), None)
             log(f"LLM {prompt_name}: {provider}/{model} ok dalam {call.seconds} dtk, "
                 f"token masuk {call.tokens_in}, keluar {call.tokens_out}")
             return result
         call.seconds = round(time.time() - t0, 2)
-        log(f"LLM {prompt_name}: {provider}/{model} gagal ({call.error.splitlines()[0] if call.error else '?'})")
-    detail = "; ".join(f"{c.provider}: {c.error.splitlines()[0] if c.error else 'gagal'}" for c in calls)
+        if server_failed:
+            _cooldown[(provider, model)] = time.time() + COOLDOWN_SECONDS
+        log(f"LLM {prompt_name}: {provider}/{model} gagal ({_short(call.error, 400)})")
+    detail = "; ".join(f"{c.provider}: {_short(c.error, 160)}" for c in calls)
     raise LLMError(f"Semua provider AI gagal untuk '{prompt_name}'. {detail}", calls)

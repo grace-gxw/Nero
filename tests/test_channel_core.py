@@ -193,16 +193,31 @@ class Skema(unittest.TestCase):
     def test_skrip_tidak_valid(self):
         segs = script_data()["segments"]
         cases = {
-            "ai_image tanpa prompt": {"segments": [dict(segs[2], image_prompt="")]},
-            "grafik tanpa isi": {"segments": [dict(segs[1], graphic={"template": "versus", "content": ""})]},
-            "hook terlalu panjang": {"hook": " ".join(["kata"] * 13)},
             "format asing": {"format": "vlog"},
             "id kembar": {"segments": [segs[0], dict(segs[1], id=1)]},
-            "teks layar terlalu panjang": {"segments": [dict(segs[0], on_screen_text="satu dua tiga empat lima enam")]},
+            "visual asing": {"segments": [dict(segs[0], visual_type="video_ai")]},
+            "tanpa visual_query": {"segments": [dict(segs[0], visual_query="")]},
+            "tanpa segmen": {"segments": []},
         }
         for name, over in cases.items():
             with self.subTest(name), self.assertRaises(ValidationError):
                 Script.model_validate(script_data(**over))
+
+    def test_visual_kosong_diperbaiki_bukan_ditolak(self):
+        segs = script_data()["segments"]
+        s = Script.model_validate(script_data(segments=[
+            dict(segs[2], id=1, image_prompt=""),                                        # ai_image tanpa prompt
+            dict(segs[1], id=2, graphic={"template": "versus", "content": ""}),          # grafik tanpa isi
+            dict(segs[1], id=3, graphic=None, on_screen_text="3 jantung"),               # isi dari teks layar
+            dict(segs[1], id=4, graphic={"template": "spiral", "content": "x"}),         # templat asing
+        ]))
+        self.assertEqual([x.visual_type for x in s.segments], ["stock", "stock", "motion_graphic", "motion_graphic"])
+        self.assertEqual(s.segments[2].graphic.content, "3 jantung")
+        self.assertEqual(s.segments[3].graphic.template, "title_card")
+        # kolom visual wajib ada di skema JSON, supaya AI selalu mengisinya
+        seg_schema = llm.json_schema_for(Script)["properties"]["segments"]["items"]
+        for k in ("image_prompt", "graphic", "on_screen_text", "label_illustration"):
+            self.assertIn(k, seg_schema["required"])
 
     def test_aturan_lulus_qc(self):
         self.assertTrue(QC.model_validate({"pass": False, "score": 7, "issues": []}).passed)
@@ -310,6 +325,8 @@ class FallbackLLM(unittest.TestCase):
         self.settings = {"gemini_key": "g", "gemini_model": "gemini-utama", "local_ai_url": "http://127.0.0.1:9",
                          "local_ai_model": "", "channel": {"keys": {"groq": "gsk"}}}
         self.waits = []
+        llm.reset_cooldown()
+        self.addCleanup(llm.reset_cooldown)
         self.patches = [mock.patch.object(llm, "_sleep", self.waits.append),
                         mock.patch.dict(os.environ, {k: "" for k in config.ENV_KEYS.values()})]
         for p in self.patches:
@@ -390,6 +407,29 @@ class FallbackLLM(unittest.TestCase):
                          [("gemini", "gemini-utama"), ("groq", "openai/gpt-oss-120b"),
                           ("gemini_lite", "gemini-3.5-flash-lite")])
         self.assertEqual(self.waits, [])   # timeout & kunci kosong tidak ditunggu
+
+    def test_provider_penuh_diistirahatkan(self):
+        def fake(inputs, model, **kw):
+            if model == "gemini-utama":
+                raise LocalAIError("Gemini terlalu lama menjawab.")
+            return '{"ok": true}'
+
+        with mock.patch("gemini_ai.interact", side_effect=fake) as gem, \
+                mock.patch("local_ai.openai_chat_json", return_value={"ok": True}):
+            self.run_ping()
+            first = gem.call_count
+            _, calls = self.run_ping()         # panggilan berikutnya: model utama dilewati dulu
+        self.assertEqual(first, 1)
+        self.assertEqual(gem.call_count, 1)
+        self.assertEqual(calls[0].provider, "groq")
+
+    def test_pemeriksaan_isi_diulang_sekali_lalu_diterima(self):
+        answers = iter(['{"ok": true, "message": "pendek"}', '{"ok": true, "message": "masih pendek"}'])
+        with mock.patch("gemini_ai.interact", side_effect=lambda *a, **k: next(answers)) as gem:
+            got, _ = self.run_ping(check=lambda r: ["pesan terlalu pendek"] if len(r.message) < 20 else [])
+        self.assertEqual(gem.call_count, 2)
+        self.assertEqual(got.message, "masih pendek")
+        self.assertIn("pesan terlalu pendek", gem.call_args.args[0][0]["text"])
 
     def test_semua_gagal(self):
         with mock.patch("gemini_ai.interact", side_effect=LocalAIError("x", status=400)), \
