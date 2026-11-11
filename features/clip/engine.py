@@ -1623,7 +1623,11 @@ def _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frame
             g.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1,{norm}[aout]")
             enc_cmd += ["-filter_complex", ";".join(g), "-map", "0:v", "-map", "[aout]"]
         enc_cmd += ["-c:a", "aac", "-b:a", "160k", "-ar", "48000"]
-    enc_cmd += _video_codec_args(enc) + ["-pix_fmt", "yuv420p", "-movflags", "+faststart", "-shortest", tmp_out]
+    enc_cmd += _video_codec_args(enc)
+    if style.get("color_bt709"):  # opsional (dipakai Channel Otomatis): warna BT.709 + tandanya di berkas
+        enc_cmd += ["-vf", "scale=out_color_matrix=bt709:out_range=tv", "-colorspace", "bt709",
+                    "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
+    enc_cmd += ["-pix_fmt", "yuv420p", "-movflags", "+faststart", "-shortest", tmp_out]
     err_path = out_path + ".log"
     with open(err_path, "wb") as errf:
         proc = subprocess.Popen(enc_cmd, stdin=subprocess.PIPE, stderr=errf, **_popen_kwargs())
