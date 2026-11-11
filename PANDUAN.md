@@ -176,6 +176,29 @@ Ada dua jenis AI, keduanya opsional:
 
 Tanpa pengaturan apa pun, setiap fitur bekerja dengan algoritma lokal (gratis); di Clip Maker, momen dipilih otomatis di komputer Anda. Untuk hasil yang jauh lebih bagus (di Clip Maker: pemilihan momen, judul hook, dan caption), isi **Claude API key** di **Pengaturan** (menu kiri bawah). Kunci ini dipakai bersama oleh semua fitur. Kunci bisa dibuat di https://console.anthropic.com (berbayar per pemakaian; satu video biasanya hanya beberapa sen dolar). Kunci hanya disimpan di komputer Anda (`data/settings.json`).
 
+## Channel Otomatis (dalam pengembangan)
+
+Fitur kedua Nero: setiap hari membuat satu video pendek orisinal untuk channel Anda sendiri, mulai dari riset topik, skrip, pemeriksaan fakta, suara, visual, sampai render. Hasilnya berupa paket siap unggah. Rancangannya ada di `SPEC.md` dan `INTEGRATION_PLAN.md`. Fitur ini masih dibangun bertahap dan **nonaktif** sampai Anda menyalakannya.
+
+Kunci API disimpan di `data/settings.json` (diisi dari halaman Nero; halamannya menyusul di fase berikutnya). Untuk baris perintah, setiap kunci juga bisa diisi lewat environment variable, dan nilainya menimpa yang tersimpan:
+
+| Kunci | Environment variable | Untuk |
+|---|---|---|
+| Gemini (sama dengan kunci Gemini di Pengaturan Nero) | `GEMINI_API_KEY` | AI penulis skrip (gratis) |
+| Groq | `GROQ_API_KEY` | AI cadangan (gratis, console.groq.com) |
+| Pexels, Pixabay | `PEXELS_API_KEY`, `PIXABAY_API_KEY` | video stok |
+| Cloudflare Workers AI | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | gambar AI |
+| YouTube | `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN` | upload & statistik |
+| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | notifikasi ke ponsel |
+
+Uji koneksi AI dari folder `Nero`:
+
+```
+.venv\Scripts\python -m features.channel llm-ping
+```
+
+Urutan AI cadangannya: Gemini (model di Pengaturan Nero) → Groq → Gemini ringan (`gemini-3.5-flash-lite`). Di paket gratis, model Gemini utama kadang penuh (tidak menjawab atau membalas 503); dalam kasus itu Nero otomatis memakai cadangan berikutnya.
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |
@@ -208,6 +231,8 @@ Nero/
   features/         satu folder per fitur
     clip/           Clip Maker: api.py (rute, antrian, pustaka gaya), engine.py (unduh, transkrip, momen,
                     render, ukur gaya), style_ai.py (baca gaya dengan AI lokal), presets.py (gaya siap pakai)
+    channel/        Channel Otomatis (dalam pengembangan): config.py (pengaturan & kunci), llm.py (AI + cadangan),
+                    schemas.py, state.py, runctx.py, prompts/ (teks perintah AI, boleh diedit)
   web/              tampilan aplikasi siap pakai (hasil build frontend/, jangan diubah langsung)
   frontend/         kode sumber tampilan: Next.js + TypeScript + Tailwind CSS + shadcn/ui
   models/           model deteksi wajah

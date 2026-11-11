@@ -12,8 +12,8 @@ Setiap fitur adalah satu folder di sini (lihat features/clip sebagai contoh) yan
   summary() ringkasan untuk Beranda: {"busy": n, "queue": n, "stats": [{"label", "value"}]}
 
 Fitur baru: buat foldernya, tambahkan ke FEATURES di bawah, lalu daftarkan juga tampilannya di
-frontend/src/lib/features.ts.
+frontend/src/features/index.ts.
 """
-from . import clip
+from . import channel, clip
 
-FEATURES = [clip]
+FEATURES = [clip, channel]
