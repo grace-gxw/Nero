@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import FORMATS, VISUAL_TYPES
 
@@ -75,28 +75,47 @@ class Research(_Model):
 # script.json
 # --------------------------------------------------------------------------
 class Graphic(_Model):
-    template: Literal[GRAPHIC_TEMPLATES] = "title_card"
-    content: str = ""
+    template: Literal[GRAPHIC_TEMPLATES]
+    content: str
 
 
 class Segment(_Model):
+    """Kolom image_prompt, graphic, on_screen_text, dan label_illustration wajib ada di skema JSON (boleh kosong),
+    supaya AI selalu mengisinya; model AI kecil cenderung melewati kolom yang tidak wajib. Data lama/tes tanpa
+    kolom itu tetap diterima (diisi nilai kosong)."""
     id: int = Field(ge=1)
     text: str = Field(min_length=1)
     visual_type: Literal[VISUAL_TYPES]
     visual_query: str = Field(min_length=2)      # bahasa Inggris, juga cadangan untuk jenis lain
-    image_prompt: str = ""
-    graphic: Graphic = Field(default_factory=Graphic)
-    on_screen_text: str = ""
+    image_prompt: str
+    graphic: Graphic
+    on_screen_text: str
+    # true bila gambar AI menggambarkan peristiwa/tokoh/tempat nyata (sejarah/berita): diberi label "ilustrasi"
+    label_illustration: bool
 
-    @model_validator(mode="after")
-    def _by_type(self):
-        if self.visual_type == "ai_image" and not self.image_prompt.strip():
-            raise ValueError(f"segmen {self.id}: image_prompt wajib diisi untuk ai_image")
-        if self.visual_type == "motion_graphic" and not self.graphic.content.strip():
-            raise ValueError(f"segmen {self.id}: graphic.content wajib diisi untuk motion_graphic")
-        if count_words(self.on_screen_text) > 5:
-            raise ValueError(f"segmen {self.id}: on_screen_text maksimal 5 kata")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_and_repair(cls, data):
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
+        for k, v in (("image_prompt", ""), ("on_screen_text", ""), ("label_illustration", False)):
+            if d.get(k) is None:
+                d[k] = v
+        g = d.get("graphic") if isinstance(d.get("graphic"), dict) else {}
+        template = g.get("template") if g.get("template") in GRAPHIC_TEMPLATES else "title_card"
+        g = {"template": template, "content": str(g.get("content") or "")}
+        # Isi visual yang wajib tetapi kosong: grafik memakai teks layar bila ada; selain itu segmen memakai
+        # video stok (visual_query selalu ada). Lebih baik daripada menolak seluruh naskah.
+        if d.get("visual_type") == "motion_graphic" and not g["content"].strip():
+            if str(d["on_screen_text"]).strip():
+                g["content"] = str(d["on_screen_text"])
+            else:
+                d["visual_type"] = "stock"
+        if d.get("visual_type") == "ai_image" and not str(d["image_prompt"]).strip():
+            d["visual_type"] = "stock"
+        d["graphic"] = g
+        return d
 
 
 class Claim(_Model):
@@ -113,12 +132,8 @@ class Script(_Model):
     word_count: int = 0
     claims: list[Claim] = Field(default_factory=list)
 
-    @field_validator("hook")
-    @classmethod
-    def _hook(cls, v):
-        if count_words(v) > 12:
-            raise ValueError("hook maksimal 12 kata")
-        return v
+    # Batas isi (hook ≤ 12 kata, teks layar ≤ 5 kata, jumlah kata) diperiksa writer.script_issues: diminta
+    # diperbaiki & dinilai QC, bukan membuat jawaban AI ditolak mentah-mentah.
 
     @model_validator(mode="after")
     def _ids_and_count(self):
@@ -240,3 +255,38 @@ class HistoryEntry(_Model):
 class Ping(_Model):
     ok: bool
     message: str = ""
+
+
+# --------------------------------------------------------------------------
+# Draf yang dijawab LLM, lalu dirapikan kode menjadi model di atas
+# --------------------------------------------------------------------------
+class SearchQuery(_Model):
+    id: str = Field(min_length=2)        # kata kunci pencarian Wikipedia bahasa Indonesia
+    en: str = ""                         # padanan bahasa Inggris (Wikipedia en biasanya lebih lengkap)
+
+
+class QueryPlan(_Model):
+    queries: list[SearchQuery] = Field(min_length=2, max_length=10)
+
+
+class CandidateDraft(_Model):
+    topic: str
+    angle: str
+    why_now: str = "evergreen"
+    source_ids: list[int] = Field(default_factory=list)    # nomor bahan riset yang mendukung topik ini
+    scores: Scores = Field(default_factory=Scores)
+
+
+class ResearchDraft(_Model):
+    candidates: list[CandidateDraft] = Field(min_length=1, max_length=8)
+
+
+class DuplicateCheck(_Model):
+    duplicate_ids: list[int] = Field(default_factory=list)  # nomor kandidat yang sama dengan video lama
+
+
+class SeoDraft(_Model):
+    title: str = Field(min_length=3, max_length=70)
+    summary: str = Field(min_length=10)                     # 2–3 kalimat ringkasan untuk deskripsi
+    tags: list[str] = Field(default_factory=list)
+    hashtags: list[str] = Field(default_factory=list)

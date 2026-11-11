@@ -199,6 +199,17 @@ Uji koneksi AI dari folder `Nero`:
 
 Urutan AI cadangannya: Gemini (model di Pengaturan Nero) → Groq → Gemini ringan (`gemini-3.5-flash-lite`). Di paket gratis, model Gemini utama kadang penuh (tidak menjawab atau membalas 503); dalam kasus itu Nero otomatis memakai cadangan berikutnya.
 
+Uji coba membuat rencana video (riset topik → skrip → pemeriksaan fakta & kualitas → judul/deskripsi/tag), tanpa membuat video:
+
+```
+.venv\Scripts\python -m features.channel genres
+.venv\Scripts\python -m features.channel run-daily --dry-run --only plan --genre fakta-sains
+```
+
+Hasilnya ada di `data\channel\runs\<tanggal>\`: `research.json`, `script.json`, `qc.json`, `metadata.json`, dan `run.log`. Menjalankan ulang memakai hasil yang sudah ada. Untuk menulis ulang skrip (dan langkah sesudahnya), tambahkan `--force script`; untuk mencari topik lain, `--force research`.
+
+Teks perintah untuk AI ada di `features\channel\prompts\`. Boleh diedit, misalnya untuk mengubah gaya penulisan. Berkas yang namanya diawali `_` dipakai bersama: `_guardrails.md` berisi aturan konten, `_description.md` templat deskripsi YouTube.
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |

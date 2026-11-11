@@ -13,3 +13,5 @@ anthropic>=2.6,<3
 pydantic>=2.14,<3
 Jinja2>=3.1,<4
 tzdata
+rapidfuzz>=3.14,<4
+feedparser>=6.0,<7

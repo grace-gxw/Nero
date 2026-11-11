@@ -35,8 +35,20 @@ Panduan singkat untuk sesi Claude Code berikutnya. Detail untuk pengguna ada di 
   - Memakai ulang `gemini_ai.py` (Interactions API) dan `local_ai.py` (Groq lewat jalur OpenAI-compatible, plus Ollama).
   - Nama model selalu diambil dari pengaturan, tidak di-hardcode.
   - QC tidak boleh diputuskan oleh model lokal (`allow_local=False`).
-- Prompt agen ada di `features/channel/prompts/*.md` (Jinja2).
-- CLI: `.venv\Scripts\python -m features.channel llm-ping`.
+- Prompt agen ada di `features/channel/prompts/*.md` (Jinja2, `StrictUndefined`).
+  - `_guardrails.md` berisi aturan SPEC bagian 8 dan di-include semua agen.
+  - `_description.md` adalah templat deskripsi YouTube.
+  - Teks prompt tidak boleh ditulis di kode Python.
+- Pipeline: `pipeline.run_daily()`.
+  - Setiap langkah menulis `data/channel/runs/<tanggal>/<langkah>.json`; hasil yang valid dipakai ulang (checkpoint).
+  - Langkah yang dijalankan ulang memaksa semua langkah sesudahnya ikut diulang.
+  - Langkah yang belum dibuat ada di `pipeline.IMPLEMENTED`.
+- Agen:
+  - `research.py`: Wikipedia/RSS. URL sumber selalu diambil dari bahan riset, bukan dari tulisan LLM.
+  - `writer.py`: rotasi format, skrip, QC + tulis ulang maks. 2×, SEO.
+  - Masalah yang bisa dipastikan kode (panjang, format, visual, URL klaim) ditambahkan ke QC.
+- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan --genre <id>`.
+- Di heredoc Bash tool, backslash (`\n`) bisa berubah; tulis skrip/berkas dengan tool Write.
 - Dilarang:
   - Memakai `yt_dlp` atau `download_video` di modul channel. Ada tes yang menjaga ini.
   - Upload ke TikTok/IG secara otomatis.
