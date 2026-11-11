@@ -14,10 +14,21 @@ SUMBER:
 NASKAH (JSON):
 {{ script }}
 
-Periksa dan laporkan setiap masalah sebagai satu "issues":
-1. fact: setiap kalimat faktual di hook, segmen, dan cta harus didukung isi SUMBER. Angka, nama, tanggal,
-   atau sebab-akibat yang tidak ada di sumber = masalah fact. Klaim yang source_url-nya tidak memuat fakta
-   itu juga masalah fact. Generalisasi berlebihan dari sumber juga masalah fact.
+LANGKAH 1 — "checks": periksa SETIAP pernyataan di hook (segment_id 0), setiap segmen (id-nya), dan cta
+(segment_id -1). Satu segmen bisa berisi beberapa pernyataan; buat satu entri per pernyataan.
+- "kind": "fact" untuk klaim tentang dunia nyata (angka, nama, tanggal, sifat, sebab-akibat);
+  "framing" hanya untuk kalimat pembuka/penghubung/ajakan tanpa klaim fakta (mis. pertanyaan di hook, CTA).
+  Kalimat seperti "banyak orang mengira…" adalah klaim fakta tentang orang lain: "fact", kecuali ditulis
+  sebagai pertanyaan atau anggapan tanpa menyebut seberapa banyak orang.
+- "supported": true hanya bila SUMBER menyatakan hal yang sama persis. Bila naskah melebih-lebihkan,
+  mempersempit, atau mengubah makna (mis. menambah "hanya", "selalu", "pertama", "terbesar", mengubah
+  lamanya uji coba menjadi batas kemampuan), isi false.
+- "evidence": salin PERSIS (kata demi kata) potongan kalimat dari SUMBER yang mendukung, 1 kalimat.
+  Kosongkan bila tidak ada. Jangan menerjemahkan atau mengarang kutipan; kutipan akan dicocokkan ke sumber.
+
+LANGKAH 2 — laporkan setiap masalah sebagai satu "issues":
+1. fact: setiap pernyataan "fact" yang supported=false, klaim yang source_url-nya tidak memuat fakta itu,
+   dan generalisasi berlebihan dari sumber.
 2. policy: topik terlarang, nasihat medis/keuangan/hukum sebagai saran pribadi, klaim menyesatkan,
    menyebut/meniru orang nyata secara merugikan, kutipan palsu, konten tidak pantas untuk penonton,
    atau "image_prompt" yang melanggar aturan gambar AI.

@@ -12,7 +12,7 @@ from tests.util import ROOT  # noqa: F401
 from tests.test_channel_core import ChannelSandbox
 
 from features.channel import config, genres, llm, pipeline, research, state, writer
-from features.channel.schemas import HistoryEntry, Issue, Metadata, Research, ResearchDraft, Script, Source
+from features.channel.schemas import QC, HistoryEntry, Issue, Metadata, Research, ResearchDraft, Script, Source
 
 URL1 = "https://id.wikipedia.org/wiki/Gurita"
 URL2 = "https://en.wikipedia.org/wiki/Tardigrade"
@@ -56,6 +56,19 @@ def long_script(fmt="myth_vs_fact", url=URL1, n_words=18, hook="Hewan laut ini p
 SEO = {"title": "Kenapa gurita punya tiga jantung?", "summary": "Gurita punya tiga jantung. Ini alasannya.",
        "tags": ["gurita", "fakta hewan", "hewan laut", "sains", "biologi", "laut", "fakta unik", "octopus"],
        "hashtags": ["#fakta", "gurita", "#Shorts"]}
+
+
+def qc_answer(score=8, issues=(), supported=True, evidence=None):
+    """Jawaban QC palsu: satu pemeriksaan per segmen, dengan kutipan bukti dari sumber pertama."""
+    def answer(v):
+        script = json.loads(v["script"])
+        quote = evidence if evidence is not None else v["sources"][0]["snippet"][:40]
+        checks = [{"segment_id": s["id"], "statement": s["text"][:60], "kind": "fact", "supported": supported,
+                   "evidence": quote} for s in script["segments"]]
+        checks.append({"segment_id": 0, "statement": script["hook"], "kind": "framing", "supported": True,
+                       "evidence": ""})
+        return {"pass": True, "score": score, "checks": checks, "issues": list(issues)}
+    return answer
 
 
 class FakeLLM:
@@ -285,8 +298,8 @@ class TulisDanQC(ChannelSandbox):
     def test_gagal_lalu_tulis_ulang_lalu_lulus(self):
         saved = []
         fake = FakeLLM(script=[long_script(hook="Versi pertama"), long_script(hook="Versi kedua yang lebih baik")],
-                       qc=[{"score": 5, "issues": [{"type": "quality", "detail": "hook lemah", "fix": "pertajam"}]},
-                           {"score": 8, "issues": []}])
+                       qc=[qc_answer(5, [{"type": "quality", "detail": "hook lemah", "fix": "pertajam"}]),
+                           qc_answer(8)])
         script, qc = self.go(fake, on_script=saved.append)
         self.assertTrue(qc.passed)
         self.assertEqual(script.hook, "Versi kedua yang lebih baik")
@@ -305,6 +318,77 @@ class TulisDanQC(ChannelSandbox):
         _, qc = self.go(fake)
         self.assertFalse(qc.passed)
         self.assertEqual(fake.names(), ["script", "qc", "script", "qc", "script", "qc"])
+
+    def test_bukti_dicocokkan_dengan_sumber(self):
+        script = Script.model_validate(long_script())
+        def run(**kw):
+            return self.review(script, qc_answer(9, **kw))
+
+        ok = run()
+        self.assertTrue(ok.passed, ok.issues)
+        self.assertEqual(len(ok.checks), len(script.segments) + 1)
+        # beda spasi & huruf besar tetap dianggap kutipan yang sama
+        self.assertTrue(run(evidence="GURITA  memiliki tiga\njantung").passed)
+        for kw, why in (({"supported": False}, "tidak didukung"),
+                        ({"evidence": "Gurita hidup seribu tahun di gurun pasir."}, "tidak ditemukan"),
+                        ({"evidence": ""}, "tidak ditemukan")):
+            with self.subTest(why):
+                qc = run(**kw)
+                self.assertFalse(qc.passed)
+                self.assertTrue(any(i.type == "fact" and why in i.detail for i in qc.issues))
+
+    def test_kata_mutlak_butuh_bukti_setara(self):
+        data = long_script()
+        data["segments"][0]["text"] = "Faktanya mereka hanya dapat hidup selama sepuluh hari di luar angkasa " + words(9)
+        data["segments"][1]["text"] = "Banyak yang mengira hewan ini abadi di ruang hampa " + words(10)
+        data["segments"][3]["text"] = "Ukuran paling kecil hewan ini nol koma satu milimeter " + words(10)
+        script = Script.model_validate(data)
+
+        def answer(v):
+            got = qc_answer(9)(v)
+            for c in got["checks"]:
+                if c["segment_id"] == 4:
+                    c["evidence"] = "Gurita memiliki tiga jantung dan darah biru."
+            return got
+
+        qc = self.review(script, answer)
+        flagged = [i.detail for i in qc.issues if "sumber tidak menyatakan" in i.detail]
+        self.assertTrue(any("segmen 1" in d and "hanya" in d for d in flagged), flagged)
+        self.assertTrue(any("segmen 2" in d and "banyak yang" in d for d in flagged), flagged)
+        self.assertTrue(any("segmen 4" in d and "paling" in d for d in flagged), flagged)
+        self.assertFalse(any("segmen 3" in d for d in flagged), flagged)   # tanpa kata mutlak
+        self.assertFalse(qc.passed)
+        # kata mutlak yang memang ada di bukti tidak dipersoalkan
+        ok = writer.absolute_issues(QC.model_validate({"score": 9, "checks": [
+            {"segment_id": 4, "statement": "s", "kind": "fact", "supported": True,
+             "evidence": "paling kecil ukurannya 0,1 mm"}]}), script)
+        self.assertFalse(any("segmen 4" in i.detail for i in ok))
+
+    def test_qc_harus_memeriksa_semua_segmen(self):
+        script = Script.model_validate(long_script())
+
+        def partial(v):
+            got = qc_answer(9)(v)
+            got["checks"] = got["checks"][:2]
+            return got
+
+        qc = self.review(script, partial)
+        self.assertFalse(qc.passed)
+        self.assertTrue(any("belum mencakup segmen [3, 4, 5, 6]" in i.detail for i in qc.issues))
+
+    def test_pembuka_berangka_bukan_framing(self):
+        def sneaky(v):
+            got = qc_answer(9)(v)
+            got["checks"].append({"segment_id": 1, "statement": "90% orang percaya mitos ini", "kind": "framing",
+                                  "supported": True, "evidence": ""})
+            return got
+
+        qc = self.review(Script.model_validate(long_script()), sneaky)
+        self.assertFalse(qc.passed)
+
+    def review(self, script, answer):
+        with mock.patch.object(llm, "generate_json", FakeLLM(qc=answer)):
+            return writer.review(self.cfg, script, self.res, "myth_vs_fact", log=lambda m: None)
 
     def test_masalah_pasti_menurunkan_skor(self):
         fake = FakeLLM(qc={"score": 9, "issues": []})
@@ -339,6 +423,10 @@ class Seo(unittest.TestCase):
         self.assertIn("Sebagian visual dibuat dengan AI", d)
         self.assertTrue(d.rstrip().endswith("#Shorts #fakta #gurita"))
         self.assertNotIn("\n\n\n", d)
+        few = FakeLLM(seo={**SEO, "hashtags": ["#Shorts"]})
+        with mock.patch.object(llm, "generate_json", few):
+            meta = writer.seo(cfg, Script.model_validate(long_script()), res, log=lambda m: None)
+        self.assertEqual(meta.hashtags, ["#Shorts", "#Gurita", "#FaktaHewan", "#HewanLaut", "#Sains"])
         plain = writer.build_description("Ringkas.", Script.model_validate(long_script()), ["#Shorts"],
                                          uses_stock=False, uses_ai=False)
         self.assertNotIn("Pexels", plain)
@@ -355,7 +443,7 @@ class PipelinePlan(ChannelSandbox):
         return FakeLLM(research_queries={"queries": [{"id": "gurita", "en": "octopus"}, {"id": "paus"}]},
                        research=draft(cand("Gurita tiga jantung", [1], 30), cand("Paus biru", [3], 20)), dedupe={"duplicate_ids": []},
                        script=lambda v: long_script(v["format"], v["sources"][0]["url"]),
-                       qc=qc or {"pass": True, "score": 8, "issues": []}, seo=SEO)
+                       qc=qc or qc_answer(8), seo=SEO)
 
     def run_plan(self, fake, **kw):
         out = []

@@ -128,9 +128,16 @@ class Script(_Model):
     format: Literal[FORMATS]
     hook: str = Field(min_length=3)
     segments: list[Segment] = Field(min_length=1)
-    cta: str = ""
+    cta: str                     # wajib di skema JSON (model kecil sering melewatinya saat menulis ulang)
     word_count: int = 0
-    claims: list[Claim] = Field(default_factory=list)
+    claims: list[Claim]          # wajib di skema JSON; data lama tanpa kolom ini diisi []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill(cls, data):
+        if isinstance(data, dict):
+            data = {**data, "cta": data.get("cta") or "", "claims": data.get("claims") or []}
+        return data
 
     # Batas isi (hook ≤ 12 kata, teks layar ≤ 5 kata, jumlah kata) diperiksa writer.script_issues: diminta
     # diperbaiki & dinilai QC, bukan membuat jawaban AI ditolak mentah-mentah.
@@ -161,9 +168,19 @@ class Issue(_Model):
     fix: str = ""
 
 
+class StatementCheck(_Model):
+    """Satu pernyataan di naskah yang dicocokkan QC dengan sumber."""
+    segment_id: int                      # 0 = hook, -1 = cta, selain itu id segmen
+    statement: str
+    kind: Literal["fact", "framing"]     # framing = pembuka/ajakan tanpa klaim fakta (mis. pertanyaan hook)
+    supported: bool
+    evidence: str                        # kutipan PERSIS dari sumber yang mendukung; kosong bila tidak ada
+
+
 class QC(_Model):
     passed: bool = Field(False, alias="pass")
     score: float = Field(ge=0, le=10)
+    checks: list[StatementCheck] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
 
     @model_validator(mode="after")

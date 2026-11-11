@@ -172,3 +172,15 @@ Catatan dokumentasi yang dicek di Fase I-1:
 - Gemini Interactions API: `generation_config` berisi `thinking_level` (`minimal|low|medium|high`), `max_output_tokens`, dan `seed`; `temperature` tidak tercantum, jadi suhu hanya dikirim ke Groq/Ollama. Token dibaca dari `usage.total_input_tokens` dan `usage.total_output_tokens`.
 - Groq: base `https://api.groq.com/openai/v1`. Model produksi yang mendukung `json_schema` strict: `openai/gpt-oss-120b` dan `openai/gpt-oss-20b`. Error 429 membawa header `retry-after` (detik).
 - `zoneinfo` di Windows gagal tanpa paket `tzdata` (sudah dibuktikan di `.venv`).
+
+Temuan Fase I-2 (uji nyata 11 Nov 2026):
+- Wikipedia membalas 429 bila permintaan terlalu rapat. Solusinya satu permintaan per kata kunci (`generator=search` +
+  TextExtracts `exintro`), jeda 0,6 dtk, dan ulang dengan Retry-After. TextExtracts membatasi `exchars` ±1.200 karakter,
+  jadi teks panjang diambil penuh lalu dipotong di kode.
+- Server gratis Gemini sedang penuh: `gemini-3.8-flash` habis waktu, lalu kena 429 (kuota). Demo selesai memakai
+  `gemini-3.5-flash-lite`.
+- QC oleh model ringan terlalu longgar. Karena itu QC wajib mengisi `checks`: satu pemeriksaan per pernyataan dengan
+  kutipan bukti persis. Kode lalu memastikan (a) kutipan itu ada di sumber, (b) semua segmen diperiksa, dan (c) kata
+  mutlak ("hanya", "paling", "banyak yang mengira", …) punya padanan di bukti. Nuansa makna tetap bisa lolos, jadi
+  manusia tetap memeriksa (mode `manual`).
+- Catatan untuk Fase I-3: `on_screen_text` kadang sama dengan isi grafik; render tidak boleh menampilkan keduanya.

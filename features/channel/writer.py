@@ -9,6 +9,8 @@ Nero · Channel Otomatis - agen penulis skrip, QC, dan SEO.
 """
 from __future__ import annotations
 
+import re
+
 from rapidfuzz import fuzz
 
 from . import llm
@@ -132,6 +134,79 @@ def write_script(cfg: ChannelConfig, research: Research, fmt: str, *, settings: 
 # --------------------------------------------------------------------------
 # QC
 # --------------------------------------------------------------------------
+EVIDENCE_MATCH = 85      # rapidfuzz partial_ratio kutipan bukti terhadap teks sumber
+_DIGIT = re.compile(r"\d")
+
+
+def _norm(text: str) -> str:
+    return " ".join((text or "").lower().split())
+
+
+def evidence_found(evidence: str, sources) -> bool:
+    """Kutipan bukti dari QC benar-benar ada di salah satu sumber (toleran beda spasi/huruf besar)."""
+    ev = _norm(evidence)
+    return len(ev) >= 12 and any(fuzz.partial_ratio(ev, _norm(s.snippet)) >= EVIDENCE_MATCH for s in sources)
+
+
+def _where(segment_id: int) -> str:
+    return {0: "hook", -1: "cta"}.get(segment_id, f"segmen {segment_id}")
+
+
+def check_issues(qc: QC, research: Research) -> list[Issue]:
+    """Masalah fakta dari pemeriksaan per pernyataan. Kode tidak percaya begitu saja pada "supported": kutipan
+    buktinya harus ditemukan di sumber."""
+    out = []
+    for c in qc.checks:
+        where = _where(c.segment_id)
+        if c.kind == "framing":
+            if _DIGIT.search(c.statement):
+                out.append(Issue(type="fact", detail=f"{where}: \"{c.statement}\" memuat angka tetapi tidak diperiksa "
+                                                     "sebagai fakta", fix="beri bukti dari sumber atau hapus angkanya"))
+            continue
+        if not c.supported:
+            out.append(Issue(type="fact", detail=f"{where}: \"{c.statement}\" tidak didukung sumber",
+                             fix="hapus atau ganti dengan fakta yang tertulis di sumber"))
+        elif not evidence_found(c.evidence, research.chosen.sources):
+            out.append(Issue(type="fact", detail=f"{where}: bukti untuk \"{c.statement}\" tidak ditemukan di sumber",
+                             fix="pakai hanya fakta yang tertulis di sumber, tanpa dilebih-lebihkan"))
+    return out
+
+
+# Kata mutlak / klaim tentang anggapan orang. Model mudah menambahkannya ("hanya 10 hari") padahal sumber tidak
+# menyatakannya. Bila dipakai, bukti dari sumber untuk segmen itu harus memuat penanda yang setara.
+ABSOLUTE_ID = ("hanya", "cuma", "satu-satunya", "selalu", "tidak pernah", "tak pernah", "pasti", "semua",
+               "seluruh", "paling", "terbesar", "terkecil", "tertinggi", "terendah", "tercepat", "terlama",
+               "tertua", "terpanjang", "terberat", "pertama", "banyak orang", "banyak yang", "kebanyakan",
+               "mayoritas", "sebagian besar", "semua orang")
+ABSOLUTE_EN = ("only", "sole", "always", "never", "all ", "every", "most", "largest", "smallest", "highest",
+               "lowest", "fastest", "longest", "oldest", "heaviest", "first", "many people", "majority", "entire")
+
+
+def _markers(text: str, words) -> list[str]:
+    low = f" {_norm(text)} "
+    return [w for w in words if re.search(rf"(?<!\w){re.escape(w.strip())}(?!\w)", low)]
+
+
+def absolute_issues(qc: QC, script: Script) -> list[Issue]:
+    out = []
+    for seg in script.segments:
+        used = _markers(seg.text, ABSOLUTE_ID)
+        if not used:
+            continue
+        evidence = " ".join(c.evidence for c in qc.checks if c.segment_id == seg.id and c.kind == "fact")
+        if not _markers(evidence, ABSOLUTE_ID + ABSOLUTE_EN):
+            out.append(Issue(type="fact", detail=f"segmen {seg.id} memakai \"{used[0]}\", tetapi sumber tidak "
+                                                 "menyatakan hal mutlak/umum itu",
+                             fix=f"hapus \"{used[0]}\" atau tulis persis seperti sumber"))
+    return out
+
+
+def coverage_problems(qc: QC, script: Script) -> list[str]:
+    covered = {c.segment_id for c in qc.checks}
+    missing = [s.id for s in script.segments if s.id not in covered]
+    return [f"checks belum mencakup segmen {missing}; periksa setiap pernyataan di setiap segmen"] if missing else []
+
+
 def review(cfg: ChannelConfig, script: Script, research: Research, fmt: str, *, settings: dict | None = None,
            recent_topics: list[str] = (), recent_hooks: list[str] = (), log=print) -> QC:
     variables = {
@@ -141,12 +216,19 @@ def review(cfg: ChannelConfig, script: Script, research: Research, fmt: str, *, 
         "words_max": cfg.video.words_range[1], "word_count": script.word_count, "audience": cfg.channel.audience,
     }
     qc = llm.generate_json("qc", variables, QC, cfg.llm.temperature_strict, cfg=cfg, settings=settings,
-                           allow_local=False, log=log)
-    extra = script_issues(script, cfg, research, fmt, list(recent_hooks))
+                           allow_local=False, check=lambda q: coverage_problems(q, script), log=log)
+    extra = check_issues(qc, research) + absolute_issues(qc, script) + coverage_issue(qc, script) + script_issues(
+        script, cfg, research, fmt, list(recent_hooks))
     score = qc.score
     if any(i.type in ("length", "repetition", "quality") for i in extra):
         score = min(score, CODE_ISSUE_SCORE_CAP)
-    return QC.model_validate({"score": score, "issues": [i.model_dump() for i in qc.issues + extra]})
+    return QC.model_validate({"score": score, "checks": [c.model_dump() for c in qc.checks],
+                              "issues": [i.model_dump() for i in qc.issues + extra]})
+
+
+def coverage_issue(qc: QC, script: Script) -> list[Issue]:
+    """QC yang tidak memeriksa semua segmen tidak boleh meloloskan naskah."""
+    return [Issue(type="fact", detail=p, fix="ulangi QC") for p in coverage_problems(qc, script)]
 
 
 def write_and_review(cfg: ChannelConfig, research: Research, fmt: str, *, script: Script | None = None,
@@ -231,8 +313,11 @@ def seo(cfg: ChannelConfig, script: Script, research: Research, *, settings: dic
 
     d = llm.generate_json("seo", variables, SeoDraft, cfg.llm.temperature_strict, cfg=cfg, settings=settings,
                           check=check, log=log)
+    tags = normalize_tags(d.tags, cfg.youtube.default_tags)
     hashtags = normalize_hashtags(d.hashtags)
-    return Metadata(title=d.title.strip(), tags=normalize_tags(d.tags, cfg.youtube.default_tags),
+    if len(hashtags) < 3:   # AI tidak memberi cukup hashtag: lengkapi dari tag
+        hashtags = normalize_hashtags(d.hashtags + ["".join(w.capitalize() for w in t.split()) for t in tags])
+    return Metadata(title=d.title.strip(), tags=tags,
                     hashtags=hashtags, category_id=cfg.youtube.category_id, language=cfg.channel.language,
                     description=build_description(d.summary, script, hashtags, uses_stock=uses_stock,
                                                   uses_ai=uses_ai))

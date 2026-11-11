@@ -34,10 +34,17 @@ ATURAN NASKAH:
 {% for h in recent_hooks %}  - {{ h }}
 {% endfor %}
 {% endif %}
-- "segments": 5–8 segmen. Setiap segmen membawa SATU informasi konkret (angka, nama, sebab-akibat).
+- "segments": 6–7 segmen, masing-masing 15–22 kata. Setiap segmen membawa SATU informasi konkret (angka,
+  nama, sebab-akibat). Hitung jumlah kata sebelum menjawab.
 - Segmen terakhir berisi payoff yang memuaskan rasa penasaran dari hook.
 - "cta": ajakan singkat dan natural (maksimal 10 kata), mis. mengajak mengikuti channel atau berkomentar.
 - "claims": setiap fakta yang diucapkan dicantumkan dengan "source_url" persis salah satu URL sumber di atas.
+- Sampaikan fakta persis seperti di sumber: jangan melebih-lebihkan atau mempersempit (jangan menambah
+  "hanya", "selalu", "pertama di dunia", "paling", atau mengubah lamanya sebuah uji coba menjadi batas
+  kemampuan) bila sumber tidak menyatakannya. Setiap kalimat akan dicocokkan dengan sumber.
+- Untuk myth_vs_fact: tulis mitos sebagai pertanyaan ("Benarkah…?") atau anggapan ("Ada anggapan
+  bahwa…"), jangan "banyak orang mengira" atau "kebanyakan orang percaya" (itu klaim yang butuh sumber).
+- Kalimat penutup/kesimpulan hanya merangkum fakta yang sudah disebut, tanpa klaim baru.
 - "on_screen_text" (opsional): maksimal 5 kata yang muncul di atas layar, hanya bila membantu.
 
 ATURAN VISUAL PER SEGMEN ("visual_type"):

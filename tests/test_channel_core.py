@@ -218,6 +218,11 @@ class Skema(unittest.TestCase):
         seg_schema = llm.json_schema_for(Script)["properties"]["segments"]["items"]
         for k in ("image_prompt", "graphic", "on_screen_text", "label_illustration"):
             self.assertIn(k, seg_schema["required"])
+        self.assertTrue({"cta", "claims"} <= set(llm.json_schema_for(Script)["required"]))
+        bare = script_data()
+        bare.pop("claims")
+        bare.pop("cta")
+        self.assertEqual(Script.model_validate(bare).claims, [])     # data lama tanpa kolom tetap terbaca
 
     def test_aturan_lulus_qc(self):
         self.assertTrue(QC.model_validate({"pass": False, "score": 7, "issues": []}).passed)
