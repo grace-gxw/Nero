@@ -40,7 +40,25 @@ _VISION_HINT = re.compile(r"(vl|vision|llava|bakllava|moondream|minicpm-v|gemma3
 
 
 class LocalAIError(RuntimeError):
-    """Galat yang pesannya aman & jelas untuk ditampilkan ke pengguna."""
+    """Galat yang pesannya aman & jelas untuk ditampilkan ke pengguna.
+    status: kode HTTP (bila ada); retry_after: detik tunggu yang diminta server; retryable: layak dicoba lagi
+    (batas pemakaian, server sibuk, koneksi putus)."""
+
+    def __init__(self, msg: str, *, status: int | None = None, retry_after: float | None = None,
+                 retryable: bool | None = None):
+        super().__init__(msg)
+        self.status = status
+        self.retry_after = retry_after
+        self.retryable = bool(retryable) if retryable is not None else status in (429, 500, 502, 503, 504)
+
+
+def _retry_after(r: requests.Response) -> float | None:
+    """Header Retry-After dalam detik (bentuk tanggal HTTP diabaikan)."""
+    try:
+        v = float(r.headers.get("Retry-After") or r.headers.get("retry-after") or "")
+        return v if v >= 0 else None
+    except ValueError:
+        return None
 
 
 def clean_url(url: str | None) -> str:
@@ -55,7 +73,7 @@ def _err(e: Exception, url: str) -> LocalAIError:
         return e
     if isinstance(e, requests.ConnectionError):
         return LocalAIError(f"AI lokal belum berjalan di {url}. Buka aplikasi Ollama dulu "
-                            "(atau pasang dari ollama.com), lalu coba lagi.")
+                            "(atau pasang dari ollama.com), lalu coba lagi.", retryable=True)
     if isinstance(e, requests.Timeout):
         return LocalAIError("AI lokal terlalu lama menjawab. Coba model yang lebih kecil di Pengaturan Nero.")
     return LocalAIError(f"AI lokal gagal: {e}"[:300])
@@ -69,12 +87,13 @@ def _http_error(r: requests.Response, model: str = "") -> LocalAIError:
     except Exception:
         msg = r.text
     msg = str(msg)[:300]
+    kw = {"status": r.status_code, "retry_after": _retry_after(r)}
     if r.status_code == 404 or "not found" in msg.lower():
-        return LocalAIError(f"Model '{model}' belum diunduh. Unduh dulu di Pengaturan Nero → AI lokal.")
+        return LocalAIError(f"Model '{model}' belum diunduh. Unduh dulu di Pengaturan Nero → AI lokal.", **kw)
     if "memory" in msg.lower():
         return LocalAIError("Memori GPU/RAM tidak cukup untuk model ini. Pilih model yang lebih kecil "
-                            f"(mis. qwen3-vl:2b-instruct). ({msg})")
-    return LocalAIError(f"AI lokal menolak permintaan ({r.status_code}): {msg}")
+                            f"(mis. qwen3-vl:2b-instruct). ({msg})", **kw)
+    return LocalAIError(f"AI lokal menolak permintaan ({r.status_code}): {msg}", **kw)
 
 
 # --------------------------------------------------------------------------
@@ -222,9 +241,12 @@ def _parse_json(text: str) -> dict:
 
 def chat_json(prompt: str, schema: dict, images: list[bytes] = (), *, url: str | None = None,
               model: str, system: str = "", timeout: float = 900, alive=None, on_token=None,
-              key: str | None = None) -> dict:
+              key: str | None = None, temperature: float = 0, options: dict | None = None,
+              usage: dict | None = None) -> dict:
     """Kirim pertanyaan (+ gambar JPEG/PNG) ke AI lokal, kembalikan jawaban berupa dict.
-    alive(): dipanggil berkala, boleh melempar galat untuk membatalkan. on_token(n): jumlah potongan jawaban."""
+    alive(): dipanggil berkala, boleh melempar galat untuk membatalkan. on_token(n): jumlah potongan jawaban.
+    options: opsi tambahan Ollama (mis. num_predict lebih besar untuk jawaban panjang).
+    usage: bila diberikan, diisi jumlah token {"input": n, "output": n} bila server melaporkannya."""
     url = clean_url(url)
     st = status(url, key)
     if not st["ok"]:
@@ -232,8 +254,9 @@ def chat_json(prompt: str, schema: dict, images: list[bytes] = (), *, url: str |
     b64 = [base64.b64encode(x).decode("ascii") for x in images]
     try:
         if st["kind"] == "ollama":
-            return _ollama_chat(url, model, system, prompt, b64, schema, timeout, alive, on_token)
-        return _openai_chat(url, model, system, prompt, b64, schema, timeout, key)
+            return _ollama_chat(url, model, system, prompt, b64, schema, timeout, alive, on_token,
+                                temperature, options, usage)
+        return _openai_chat(url, model, system, prompt, b64, schema, timeout, key, temperature, usage)
     except LocalAIError:
         raise
     except Exception as e:
@@ -242,7 +265,21 @@ def chat_json(prompt: str, schema: dict, images: list[bytes] = (), *, url: str |
         raise _err(e, url) from e
 
 
-def _ollama_chat(url, model, system, prompt, b64, schema, timeout, alive, on_token):
+def openai_chat_json(url: str, model: str, prompt: str, schema: dict, *, key: str | None = None,
+                     system: str = "", temperature: float = 0, timeout: float = 180,
+                     usage: dict | None = None) -> dict:
+    """Langsung ke server bergaya OpenAI di internet (mis. Groq), tanpa memeriksa status lebih dulu."""
+    url = clean_url(url)
+    try:
+        return _openai_chat(url, model, system, prompt, [], schema, timeout, key, temperature, usage)
+    except LocalAIError:
+        raise
+    except Exception as e:
+        raise _err(e, url) from e
+
+
+def _ollama_chat(url, model, system, prompt, b64, schema, timeout, alive, on_token, temperature=0,
+                 options=None, usage=None):
     msgs = ([{"role": "system", "content": system}] if system else []) + \
            [{"role": "user", "content": prompt, **({"images": b64} if b64 else {})}]
     # konteks secukupnya (gambar sudah diperkecil): memori cache lebih kecil, lebih banyak model muat di GPU.
@@ -250,7 +287,8 @@ def _ollama_chat(url, model, system, prompt, b64, schema, timeout, alive, on_tok
     # keep_alive pendek: model dilepas dari memori GPU 1 menit setelah dipakai, supaya transkrip Whisper
     # (juga di GPU) tidak kehabisan memori lalu pindah ke CPU. Membaca beberapa clip berturut tetap cepat
     body = {"model": model, "messages": msgs, "stream": True, "format": schema, "think": False,
-            "keep_alive": "60s", "options": {"temperature": 0, "num_ctx": 5120, "num_predict": 700}}
+            "keep_alive": "60s",
+            "options": {"temperature": temperature, "num_ctx": 5120, "num_predict": 700, **(options or {})}}
     for attempt in range(2):
         r = requests.post(f"{url}/api/chat", json=body, stream=True, timeout=(5, timeout))
         if r.ok:
@@ -287,11 +325,13 @@ def _ollama_chat(url, model, system, prompt, b64, schema, timeout, alive, on_tok
             if time.time() - t0 > timeout:
                 raise LocalAIError("AI lokal terlalu lama menjawab. Coba model yang lebih kecil.")
             if ev.get("done"):
+                if usage is not None:
+                    usage.update(input=ev.get("prompt_eval_count"), output=ev.get("eval_count"))
                 break
     return _parse_json("".join(parts))
 
 
-def _openai_chat(url, model, system, prompt, b64, schema, timeout, key=None):
+def _openai_chat(url, model, system, prompt, b64, schema, timeout, key=None, temperature=0, usage=None):
     content = [{"type": "text", "text": prompt}] + \
               [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{x}"}} for x in b64]
     msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": content}]
@@ -299,12 +339,16 @@ def _openai_chat(url, model, system, prompt, b64, schema, timeout, key=None):
                {"type": "json_object"}, None]
     last = None
     for fmt in formats:
-        body = {"model": model, "messages": msgs, "temperature": 0, "stream": False}
+        body = {"model": model, "messages": msgs, "temperature": temperature, "stream": False}
         if fmt:
             body["response_format"] = fmt
         r = requests.post(f"{url}/v1/chat/completions", json=body, timeout=(5, timeout), headers=_auth(key))
         if r.ok:
-            text = r.json()["choices"][0]["message"].get("content") or ""
+            data = r.json()
+            if usage is not None:
+                u = data.get("usage") or {}
+                usage.update(input=u.get("prompt_tokens"), output=u.get("completion_tokens"))
+            text = data["choices"][0]["message"].get("content") or ""
             return _parse_json(text)
         last = _http_error(r, model)
         if r.status_code not in (400, 422):

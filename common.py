@@ -78,14 +78,24 @@ def _copy(x):
 
 
 def _merge(defaults: dict, saved: dict) -> dict:
-    """Nilai tersimpan menimpa nilai bawaan; kamus di dalamnya (mis. style) digabung satu tingkat."""
+    """Nilai tersimpan menimpa nilai bawaan; kamus di dalamnya (mis. style, atau bagian bertingkat
+    pengaturan channel) digabung sampai ke dalam, jadi kunci bawaan yang belum tersimpan tetap ada."""
     out = _copy(defaults)
     for k, v in saved.items():
         if isinstance(out.get(k), dict) and isinstance(v, dict):
-            out[k] = {**out[k], **v}
+            out[k] = _merge(out[k], v)
         else:
             out[k] = v
     return out
+
+
+def _deep_update(target: dict, patch: dict) -> None:
+    """Ubah `target` di tempat: kamus digabung sampai ke dalam, nilai lain diganti."""
+    for k, v in patch.items():
+        if isinstance(target.get(k), dict) and isinstance(v, dict):
+            _deep_update(target[k], v)
+        else:
+            target[k] = v
 
 
 def read_settings_file() -> dict:
@@ -135,7 +145,7 @@ def update_settings(patch: dict, fid: str | None = None) -> None:
             if k not in allowed:
                 continue
             if isinstance(target.get(k), dict) and isinstance(v, dict):
-                target[k].update(v)
+                _deep_update(target[k], v)
             else:
                 target[k] = v
         write_settings_file(s)

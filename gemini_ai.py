@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 
 import requests
@@ -25,6 +26,19 @@ KEY_PAGE = "https://aistudio.google.com/api-keys"
 INLINE_LIMIT = 18 * 1024 * 1024          # permintaan dengan data langsung maksimal ±20 MB
 
 
+def _retry_delay(r: requests.Response, err: dict) -> float | None:
+    """Detik tunggu yang diminta Gemini: header Retry-After, atau RetryInfo.retryDelay ("30s") di isi galat."""
+    try:
+        return float(r.headers.get("Retry-After") or "")
+    except ValueError:
+        pass
+    for d in err.get("details") or []:
+        m = re.fullmatch(r"(\d+(?:\.\d+)?)s", str((d or {}).get("retryDelay") or ""))
+        if m:
+            return float(m.group(1))
+    return None
+
+
 def _error(r: requests.Response, model: str) -> LocalAIError:
     try:
         err = r.json().get("error") or {}
@@ -32,19 +46,22 @@ def _error(r: requests.Response, model: str) -> LocalAIError:
         err = {}
     msg = str(err.get("message") or r.text)[:240]
     code, status = r.status_code, str(err.get("status") or "")
+    kw = {"status": code, "retry_after": _retry_delay(r, err if isinstance(err, dict) else {})}
     if code == 400 and ("API key" in msg or "API_KEY" in json.dumps(err)):
-        return LocalAIError("API key Gemini tidak valid. Periksa lagi di Pengaturan Nero → AI untuk meniru gaya.")
+        return LocalAIError("API key Gemini tidak valid. Periksa lagi di Pengaturan Nero → AI untuk meniru gaya.",
+                            **kw)
     if code == 403:
         return LocalAIError("API key Gemini ditolak (diblokir, belum diverifikasi, atau proyeknya tidak boleh "
-                            f"memakai paket gratis). Buat kunci baru di {KEY_PAGE}. ({msg})")
+                            f"memakai paket gratis). Buat kunci baru di {KEY_PAGE}. ({msg})", **kw)
     if code == 404:
-        return LocalAIError(f"Model Gemini '{model}' tidak ditemukan. Periksa nama model di Pengaturan Nero.")
+        return LocalAIError(f"Model Gemini '{model}' tidak ditemukan. Periksa nama model di Pengaturan Nero.", **kw)
     if code == 429 or status == "RESOURCE_EXHAUSTED":
         return LocalAIError("Batas pemakaian gratis Gemini tercapai (per menit atau per hari). "
-                            "Coba lagi nanti; kuota harian diatur ulang tengah malam waktu Pasifik.")
+                            "Coba lagi nanti; kuota harian diatur ulang tengah malam waktu Pasifik.",
+                            **{**kw, "status": 429})
     if code in (500, 503, 504):
-        return LocalAIError(f"Server Gemini sedang sibuk ({code}). Coba lagi sebentar lagi.")
-    return LocalAIError(f"Gemini menolak permintaan ({code}): {msg}")
+        return LocalAIError(f"Server Gemini sedang sibuk ({code}). Coba lagi sebentar lagi.", **kw)
+    return LocalAIError(f"Gemini menolak permintaan ({code}): {msg}", **kw)
 
 
 def _output_text(data: dict) -> str:
@@ -59,8 +76,9 @@ def _output_text(data: dict) -> str:
 
 
 def interact(inputs: list[dict], *, key: str, model: str = DEFAULT_MODEL, schema: dict | None = None,
-             thinking: str = "low", timeout: float = 240, alive=None) -> str:
-    """Kirim satu permintaan; hasil: teks jawaban. inputs: [{type: text|image|video, ...}]."""
+             thinking: str = "low", timeout: float = 240, alive=None, usage: dict | None = None) -> str:
+    """Kirim satu permintaan; hasil: teks jawaban. inputs: [{type: text|image|video, ...}].
+    usage: bila diberikan, diisi jumlah token {"input": n, "output": n} dari jawaban Gemini."""
     if not key:
         raise LocalAIError(f"Belum ada API key Gemini. Buat gratis di {KEY_PAGE} lalu tempel di Pengaturan Nero.")
     body = {"model": model, "input": inputs, "generation_config": {"thinking_level": thinking}}
@@ -74,11 +92,15 @@ def interact(inputs: list[dict], *, key: str, model: str = DEFAULT_MODEL, schema
         try:
             r = requests.post(f"{API_URL}/interactions", json=body, headers=headers, timeout=(10, timeout))
         except requests.ConnectionError as e:
-            raise LocalAIError("Tidak bisa terhubung ke Gemini. Periksa koneksi internet.") from e
+            raise LocalAIError("Tidak bisa terhubung ke Gemini. Periksa koneksi internet.", retryable=True) from e
         except requests.Timeout as e:
+            # tidak dicoba ulang otomatis: server yang tidak menjawab biasanya sedang penuh, lebih baik pindah model
             raise LocalAIError("Gemini terlalu lama menjawab. Coba lagi.") from e
         if r.ok:
             data = r.json()
+            if usage is not None:
+                u = data.get("usage") or {}
+                usage.update(input=u.get("total_input_tokens"), output=u.get("total_output_tokens"))
             if data.get("status") not in (None, "completed"):
                 raise LocalAIError(f"Gemini tidak menyelesaikan jawaban (status {data.get('status')}).")
             text = _output_text(data)
