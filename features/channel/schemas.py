@@ -200,6 +200,7 @@ class Metadata(_Model):
     hashtags: list[str] = Field(default_factory=list)
     category_id: str = ""
     language: str = "id"
+    summary: str = ""            # ringkasan dari agen SEO; deskripsi disusun ulang setelah visual jadi
 
 
 # --------------------------------------------------------------------------
@@ -212,29 +213,55 @@ class WordTiming(_Model):
     segment_id: int
 
 
+class SegmentTiming(_Model):
+    """Rentang suara satu bagian narasi (hook = 0, segmen, CTA = -1) di voice.wav, termasuk jeda sebelumnya."""
+    segment_id: int
+    start: float          # awal bagian ini (visual berganti di sini)
+    speech_start: float   # kata pertama mulai diucapkan
+    end: float            # suara bagian ini selesai
+
+
 class Words(_Model):
     words: list[WordTiming]
-    duration: float
+    duration: float                       # panjang voice.wav (detik)
     source: Literal["edge", "whisper", "piper"] = "edge"
+    segments: list[SegmentTiming] = Field(default_factory=list)
+    voice: str = ""
+    rate: str = ""
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SegmentVisual(_Model):
     segment_id: int
     type: Literal[VISUAL_TYPES + ("plain",)]
     requested: Literal[VISUAL_TYPES]
-    file: str
+    file: str                    # relatif terhadap folder run, mis. clips/seg_1.mp4
+    start: float = 0             # detik di video
+    end: float = 0
+    frames: int = 0
     source: str = ""             # pexels | pixabay | cloudflare | nero
     source_id: str = ""
     url: str = ""
     author: str = ""
+    query: str = ""
     prompt: str = ""
     seed: int | None = None
-    fallbacks: list[str] = Field(default_factory=list)
+    images: list[str] = Field(default_factory=list)    # gambar AI (relatif), bisa 2 untuk segmen panjang
+    on_screen_text: bool = False
+    fallbacks: list[str] = Field(default_factory=list)  # alasan tiap cadangan yang dipakai
 
 
 class Visuals(_Model):
     segments: list[SegmentVisual]
     uses_ai_images: bool = False
+    uses_stock: bool = False
+    fps: int = 30
+    total_frames: int = 0
+
+    @property
+    def clip_ids(self) -> list[str]:
+        """ID klip stok (mis. pexels:123) untuk riwayat: tidak dipakai ulang 30 hari."""
+        return [f"{s.source}:{s.source_id}" for s in self.segments if s.type == "stock" and s.source_id]
 
 
 class RenderInfo(_Model):
@@ -244,7 +271,14 @@ class RenderInfo(_Model):
     duration: float
     has_audio: bool
     valid: bool
-    problems: list[str] = Field(default_factory=list)
+    problems: list[str] = Field(default_factory=list)    # membuat video tidak valid (tidak boleh di-upload)
+    warnings: list[str] = Field(default_factory=list)    # dicatat, tidak menggagalkan
+    # video sah tetapi variasi visualnya kurang (banyak cadangan): wajib dicek manusia, tidak boleh upload otomatis
+    needs_review: bool = False
+    visual_types: list[str] = Field(default_factory=list)
+    music: str = ""
+    encoder: str = ""
+    size_mb: float = 0
 
 
 class YouTubeResult(_Model):

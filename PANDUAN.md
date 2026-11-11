@@ -210,6 +210,24 @@ Hasilnya ada di `data\channel\runs\<tanggal>\`: `research.json`, `script.json`, 
 
 Teks perintah untuk AI ada di `features\channel\prompts\`. Boleh diedit, misalnya untuk mengubah gaya penulisan. Berkas yang namanya diawali `_` dipakai bersama: `_guardrails.md` berisi aturan konten, `_description.md` templat deskripsi YouTube.
 
+### Membuat video (uji coba)
+
+```
+.venv\Scripts\python -m features.channel run-daily --dry-run --only video --genre fakta-sains
+```
+
+`--only video` menjalankan rencana di atas lalu suara, visual, dan render. `--only media` hanya menjalankan suara sampai render, memakai rencana yang sudah ada. Hasil tambahan di folder run: `voice.mp3`, `words.json` (waktu tiap kata), `visuals.json` (sumber tiap visual, termasuk cadangan yang dipakai), `clips\`, `images\` (gambar AI), `final.mp4`, `captions.srt`, dan `render.json` (hasil pemeriksaan video). `final.mp4` juga disalin ke `output\channel\<tanggal>\`.
+
+- **Suara:** edge-tts (gratis, tanpa key, butuh internet). Pilih suara Ardi (pria) atau Gadis (wanita) di pengaturan. Gadis berbicara lebih pelan, jadi naskahnya otomatis dibuat lebih pendek supaya video tetap 45–58 detik. Bila narasi kepanjangan, kecepatan suara dinaikkan sampai +15%; bila masih kepanjangan, AI diminta memendekkan naskah lalu naskah diperiksa ulang.
+- **Visual:** video stok dari Pexels lalu Pixabay, gambar AI dari Cloudflare yang digerakkan pelan (efek Ken Burns), dan grafik buatan Nero (angka besar, daftar poin, perbandingan, kutipan, judul). Bila satu jenis gagal (key belum diisi, kuota habis, klip tidak ditemukan), Nero memakai cadangan: gambar AI → video stok → grafik → latar polos. Alasannya dicatat di `visuals.json`.
+- **Key gratis:** Pexels di pexels.com/api, Pixabay di pixabay.com/api/docs (masuk dulu, key tampil di halaman itu), dan Cloudflare: daftar di dash.cloudflare.com → Workers AI → **Use REST API** → **Create a Workers AI API Token**. Salin token dan **Account ID** dari halaman yang sama. Kuota gratis gambar AI ±60 gambar/hari; Nero berhenti membuat gambar AI di 80% kuota (catatan pemakaian di `data\channel\usage\`).
+- **Musik (opsional):** isi `video.music_dir` dengan folder musik bebas royalti milik Anda. Satu lagu dipilih per hari, dipelankan (bawaan -22 dB), diberi fade in/out.
+- **Subtitle:** memakai gaya dari pustaka Clip Maker (`video.caption_style`, bawaan `preset:klasik`, atau id dari "Gaya saya").
+- Video yang tidak lolos pemeriksaan (bukan 1080×1920, bukan 30 fps, tanpa audio, atau durasi di luar 45–58 detik ±3) membuat run gagal dan tidak akan di-upload.
+- Video yang sah tetapi visualnya kurang bervariasi (misalnya semua grafik karena key stok/AI belum diisi) ditandai **perlu dicek** di `render.json` (`needs_review`). Video seperti ini tidak akan diunggah otomatis.
+- Menjalankan ulang memakai hasil yang masih cocok. Bila skrip, suara, atau pengaturan berubah (misalnya suara diganti, topik terlarang ditambah), langkah yang terdampak dibuat ulang otomatis. Video lama di folder hasil ditarik begitu langkah sebelumnya dijalankan ulang. Untuk membuat ulang satu langkah: `--force tts`, `--force visuals` (misalnya setelah mengisi key Pexels/Cloudflare), atau `--force render` (misalnya setelah mengganti gaya subtitle).
+- QC dengan model Gemini ringan masih bisa meloloskan nuansa yang keliru, misalnya kalimat usang di Wikipedia ("sekarang berada di…"). Tonton dan baca naskahnya sebelum mengunggah; key Groq membuat pemeriksaan lebih teliti.
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |
@@ -243,7 +261,9 @@ Nero/
     clip/           Clip Maker: api.py (rute, antrian, pustaka gaya), engine.py (unduh, transkrip, momen,
                     render, ukur gaya), style_ai.py (baca gaya dengan AI lokal), presets.py (gaya siap pakai)
     channel/        Channel Otomatis (dalam pengembangan): config.py (pengaturan & kunci), llm.py (AI + cadangan),
-                    schemas.py, state.py, runctx.py, prompts/ (teks perintah AI, boleh diedit)
+                    research.py, writer.py (skrip, QC, SEO), voice.py (suara), visuals.py + stock.py + ai_images.py
+                    + graphics.py (visual), render.py, pipeline.py, schemas.py, state.py, runctx.py,
+                    prompts/ (teks perintah AI, boleh diedit)
   web/              tampilan aplikasi siap pakai (hasil build frontend/, jangan diubah langsung)
   frontend/         kode sumber tampilan: Next.js + TypeScript + Tailwind CSS + shadcn/ui
   models/           model deteksi wajah

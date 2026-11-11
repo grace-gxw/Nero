@@ -39,7 +39,7 @@ def words(n, word="kata"):
     return " ".join([word] * n)
 
 
-def long_script(fmt="myth_vs_fact", url=URL1, n_words=18, hook="Hewan laut ini punya tiga jantung sekaligus"):
+def long_script(fmt="myth_vs_fact", url=URL1, n_words=20, hook="Hewan laut ini punya tiga jantung sekaligus"):
     types = ["stock", "motion_graphic", "ai_image", "stock", "motion_graphic", "stock"]
     segs = []
     for i, t in enumerate(types, 1):
@@ -253,7 +253,8 @@ class PemeriksaanSkrip(unittest.TestCase):
 
     def test_skrip_baik_tanpa_masalah(self):
         s = Script.model_validate(long_script())
-        self.assertTrue(110 <= s.word_count <= 135, s.word_count)
+        lo, hi = config.words_range(self.cfg)
+        self.assertTrue(lo <= s.word_count <= hi, (s.word_count, lo, hi))
         self.assertEqual(self.issues(long_script()), [])
 
     def test_berbagai_masalah(self):
@@ -385,6 +386,23 @@ class TulisDanQC(ChannelSandbox):
 
         qc = self.review(Script.model_validate(long_script()), sneaky)
         self.assertFalse(qc.passed)
+
+    def test_angka_nama_diri_bukan_klaim(self):
+        """Uji nyata 12 Nov 2026: hook "Benarkah Voyager 1 keluar dari tata surya?" ditolak karena angka '1'."""
+        res = Research.model_validate({"date": "2026-11-12", "candidates": [{
+            "topic": "Perjalanan Voyager 1", "angle": "a",
+            "sources": [{"title": "Voyager 1", "url": URL1, "snippet": "Voyager 1 dan Apollo 11. COVID-19."}]}]})
+        self.assertFalse(writer.has_quantity("Benarkah Voyager 1 keluar dari tata surya?", res))
+        self.assertFalse(writer.has_quantity("Benarkah COVID-19 menular?", res))
+        self.assertTrue(writer.has_quantity("Benarkah 5 planet bisa terlihat?", res))
+        self.assertTrue(writer.has_quantity("Apollo 11 membawa 3 astronot", res))
+        self.assertTrue(writer.has_quantity("Benarkah Pioneer 10 lebih dulu?", res))   # nama tidak ada di sumber
+
+    def test_kata_mutlak_di_kalimat_mitos(self):
+        self.assertEqual(writer.asserted_markers("Ada anggapan bahwa Voyager 1 meninggalkan seluruh tata surya."), [])
+        self.assertEqual(writer.asserted_markers("Benarkah semua bintang sama? Faktanya hanya sebagian."), ["hanya"])
+        self.assertEqual(writer.asserted_markers("Ada anggapan bahwa banyak orang percaya ini."), ["banyak orang"])
+        self.assertEqual(writer.asserted_markers("Voyager adalah wahana paling jauh."), ["paling"])
 
     def review(self, script, answer):
         with mock.patch.object(llm, "generate_json", FakeLLM(qc=answer)):

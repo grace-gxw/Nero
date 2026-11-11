@@ -4,9 +4,16 @@ Nero · Channel Otomatis - folder run harian, checkpoint per langkah, log, dan k
 Setiap langkah menulis hasilnya ke data/channel/runs/YYYY-MM-DD/. Hasil yang sudah ada dan valid terhadap
 skemanya dipakai lagi (langkah di-skip), kecuali langkah itu dipaksa (--force). Kunci run mencegah dua run
 untuk tanggal yang sama berjalan bersamaan (mis. tombol di halaman + jadwal).
+
+Integritas checkpoint:
+- Sidik (hash) masukan tiap hasil disimpan di inputs.json. Hasil lama hanya dipakai lagi bila sidiknya cocok dengan
+  masukan sekarang, jadi skrip yang diubah (mis. diedit tangan) tidak bisa lolos dengan QC/suara/video lama.
+- Begitu sebuah langkah mulai bekerja, hasil lamanya sendiri dihapus (invalidate). Langkah yang gagal/dibatalkan
+  di tengah jalan tidak meninggalkan hasil lama yang tampak valid; langkah sesudahnya terlindung oleh sidiknya.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -19,6 +26,40 @@ from . import state
 STEPS = ("analyst", "research", "script", "qc", "seo", "tts", "visuals", "render",
          "publish_youtube", "manual_pack", "notify", "state_update")
 LOCK_STALE_SECONDS = 3 * 3600   # kunci lebih tua dari ini dianggap sisa run yang macet/dimatikan
+
+# langkah -> langkah yang hasilnya ia pakai (SEO tidak dipakai media; deskripsi disusun ulang setelah visual)
+DEPENDS = {"research": (), "script": ("research",), "qc": ("script",), "seo": ("qc",), "tts": ("qc",),
+           "visuals": ("tts",), "render": ("visuals",)}
+# berkas hasil tiap langkah (relatif terhadap folder run)
+OUTPUTS = {"research": ("research.json",), "script": ("script.json",), "qc": ("qc.json",),
+           "seo": ("metadata.json",), "tts": ("words.json", "voice.wav", "voice.mp3"),
+           "visuals": ("visuals.json",),
+           "render": ("render.json", "final.mp4", "final.jpg", "captions.srt", "base.mkv")}
+FINGERPRINTS = "inputs.json"
+
+
+def downstream(step: str) -> list[str]:
+    """Semua langkah yang (langsung/tidak langsung) memakai hasil `step`, urut seperti STEPS."""
+    found: set[str] = set()
+    frontier = {step}
+    while frontier:
+        nxt = {s for s, deps in DEPENDS.items() if frontier & set(deps)} - found
+        found |= nxt
+        frontier = nxt
+    return [s for s in STEPS if s in found]
+
+
+def sha(*parts) -> str:
+    """Sidik isi: model Pydantic, teks, atau angka (urutan berpengaruh)."""
+    h = hashlib.sha1()
+    for p in parts:
+        if isinstance(p, BaseModel):
+            p = p.model_dump_json(by_alias=True)
+        elif not isinstance(p, str):
+            p = json.dumps(p, sort_keys=True, default=str)
+        h.update(p.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:20]
 
 
 class RunLocked(RuntimeError):
@@ -51,6 +92,29 @@ class RunContext:
         path = self.path(f"{name}.json")
         state.write_json_atomic(path, model.model_dump(mode="json", by_alias=True))
         return path
+
+    # ---------------------------------------------------------------- integritas
+    def fingerprints(self) -> dict:
+        return state.read_json(self.path(FINGERPRINTS), {}) or {}
+
+    def fingerprint(self, step: str) -> str:
+        return str(self.fingerprints().get(step) or "")
+
+    def set_fingerprint(self, step: str, value: str) -> None:
+        data = self.fingerprints()
+        data[step] = value
+        state.write_json_atomic(self.path(FINGERPRINTS), data)
+
+    def invalidate(self, step: str) -> None:
+        """Hapus hasil lama `step` beserta sidiknya (dipanggil saat langkah mulai bekerja)."""
+        for name in OUTPUTS.get(step, ()):
+            try:
+                os.remove(self.path(name))
+            except FileNotFoundError:
+                pass
+        data = self.fingerprints()
+        if step in data:
+            state.write_json_atomic(self.path(FINGERPRINTS), {k: v for k, v in data.items() if k != step})
 
     def cached(self, name: str, schema: type[BaseModel], force: bool = False) -> BaseModel | None:
         """Checkpoint: hasil lama yang valid, atau None bila langkah perlu dijalankan (atau dipaksa)."""

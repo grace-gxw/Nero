@@ -184,3 +184,49 @@ Temuan Fase I-2 (uji nyata 11 Nov 2026):
   mutlak ("hanya", "paling", "banyak yang mengira", …) punya padanan di bukti. Nuansa makna tetap bisa lolos, jadi
   manusia tetap memeriksa (mode `manual`).
 - Catatan untuk Fase I-3: `on_screen_text` kadang sama dengan isi grafik; render tidak boleh menampilkan keduanya.
+
+Temuan Fase I-3 (dokumentasi resmi & uji nyata 12 Nov 2026):
+- edge-tts 7.3.1: boundary bawaan `SentenceBoundary`, jadi harus diminta `WordBoundary` (offset/durasi dalam satuan
+  100 ns). Teks WordBoundary tanpa tanda baca; angka dan satuan bisa jadi satu kata ("September 2007", "-272 °C"),
+  sehingga dicocokkan kembali ke token naskah. SSML/`<break>` tidak didukung, jadi tiap bagian narasi disuarakan
+  terpisah lalu disambung dengan jeda. `stream_sync()` bisa menggantung bila ada galat, jadi dipakai `stream()`
+  async. Di laptop ini koneksi IPv6 ke layanan Microsoft kadang langsung putus (WinError 64); IPv4 stabil, jadi IPv4
+  dicoba lebih dulu.
+- Kecepatan bicara terukur (rate +5%): Ardi 0,357 dtk/kata, Gadis 0,469 dtk/kata (±31% lebih lambat). Naskah 111 kata
+  hanya 42 dtk dengan Ardi tetapi 54 dtk dengan Gadis. `video.words_range` kini bawaannya otomatis per suara
+  (Ardi ±122–146 kata, Gadis ±93–111 kata) supaya narasi masuk 45–58 dtk; nilai tetap bisa dikunci di pengaturan.
+- Cloudflare Workers AI: `flux-1-schnell` (usulan SPEC) tidak menerima width/height, jadi gambar vertikal harus
+  dipotong dari persegi. Bawaan diganti ke `@cf/black-forest-labs/flux-2-klein-4b` (multipart, width/height 256–1920,
+  seed; ±156 neurons per gambar 768×1344, ±60 gambar/hari dalam kuota gratis). Kuota habis = HTTP 429 kode 3036
+  (tidak dicoba ulang); kode 3040 = kapasitas penuh sementara (dicoba ulang). Pemakaian dicatat per tanggal UTC dan
+  gambar AI berhenti di 80% kuota.
+- Pexels: `Authorization: <key>` tanpa Bearer, `orientation=portrait`; entri `hls` tanpa ukuran dilewati. Pixabay:
+  tidak ada filter orientasi untuk video (dipilih di kode), hasil pencarian wajib di-cache 24 jam, key ada di URL
+  sehingga URL tidak pernah ditulis ke log. Kredit pembuat klip ditambahkan ke deskripsi.
+- Piper: satu-satunya suara Indonesia (`id_ID-news_tts-medium`) lisensinya tidak jelas, jadi cadangan Piper belum
+  dipasang. Bila edge-tts gagal 3× per bagian, langkah TTS gagal dan pipeline berhenti (tanpa upload).
+- `engine.render_clip` dipakai apa adanya: video dasar vertikal selalu memakai tata letak `fill` tanpa pelacakan
+  wajah. Pembatalan tidak boleh berupa `RuntimeError`, karena engine akan pindah permanen dari NVENC ke libx264.
+  Gaya subtitle diambil dari pustaka Clip Maker (`video.caption_style`), dengan potong jeda, zoom, dan judul
+  dimatikan, serta posisi subtitle dijaga di 55–65% tinggi layar.
+- Warna: klip stok (BT.709, kadang rentang penuh) dan grafik/gambar AI (BT.601 tanpa tanda) yang disambung tanpa
+  encode ulang dibaca dengan aturan warna klip pertama, sehingga warnanya bergeser (kuning 230,230,0 → 231,215,0).
+  Semua klip antara kini dikonversi dan diberi tanda BT.709 rentang TV. Encode akhir memakai opsi gaya baru
+  `color_bt709` di `engine.render_clip` (bawaan mati, jadi Clip Maker tidak berubah).
+- Review adversarial (2 putaran, 8+2 agen) menemukan masalah checkpoint: hasil lama (QC, suara, video, salinan di
+  folder hasil) bisa terpakai lagi setelah skrip/pengaturan berubah atau langkah gagal di tengah jalan. Solusinya
+  sidik masukan per langkah (`inputs.json`, termasuk pengaturan yang relevan), penghapusan hasil lama saat langkah
+  mulai bekerja, dan penarikan salinan video di folder hasil. Langkah media hanya diulang bila sidiknya berubah,
+  jadi `--force seo/qc` tidak membuat ulang suara dan gambar AI.
+- Durasi: narasi yang pasti terlalu pendek untuk validasi render (< target minimal − 3 dtk) kini ditangani di langkah
+  TTS (naskah dipanjangkan sekali, mirip pemendekan), sebelum kuota visual terpakai. Di atas itu tetap peringatan
+  (SPEC 6.7). Video yang sah tetapi variasi visualnya kurang ditandai `needs_review` (tidak boleh upload otomatis).
+- Uji nyata 12 Nov (topik Voyager 1) menemukan dua salah-tangkap QC Fase I-2. (1) Angka di nama diri ("Voyager 1")
+  dianggap klaim jumlah; kini angka yang menempel pada nama yang tertulis di sumber diabaikan. (2) Kata mutlak di
+  kalimat mitos ("Ada anggapan bahwa … seluruh …") dianggap klaim; kini di kalimat tanya/mitos hanya klaim tentang
+  anggapan orang ("banyak orang") yang diperiksa.
+- Wikipedia Indonesia bisa usang: artikel Voyager 1 masih menulis "sekarang berada di heliosheath" dan "masih di
+  sabuk Kuiper", padahal artikel yang sama dan Wikipedia Inggris mencatat Voyager 1 sudah memasuki ruang
+  antarbintang sejak 2012. Prompt skrip & QC kini meminta pertentangan semacam ini ditandai, tetapi QC dengan
+  `gemini-3.5-flash-lite` menggolongkannya sebagai "quality" sehingga naskah tetap lolos. Pemeriksaan manusia
+  (mode `manual`) dan model yang lebih kuat (Groq) tetap diperlukan.

@@ -40,14 +40,22 @@ Panduan singkat untuk sesi Claude Code berikutnya. Detail untuk pengguna ada di 
   - `_description.md` adalah templat deskripsi YouTube.
   - Teks prompt tidak boleh ditulis di kode Python.
 - Pipeline: `pipeline.run_daily()`.
-  - Setiap langkah menulis `data/channel/runs/<tanggal>/<langkah>.json`; hasil yang valid dipakai ulang (checkpoint).
-  - Langkah yang dijalankan ulang memaksa semua langkah sesudahnya ikut diulang.
-  - Langkah yang belum dibuat ada di `pipeline.IMPLEMENTED`.
+  - Setiap langkah menulis `data/channel/runs/<tanggal>/<langkah>.json`. Hasil lama dipakai ulang hanya bila valid dan sidik masukannya (isi + pengaturan relevan, `pipeline.fp_*`, disimpan di `inputs.json`) cocok.
+  - Langkah yang mulai bekerja menghapus hasil lamanya sendiri (`RunContext.invalidate`). Bila video bergantung padanya, salinan di `output/channel/<tanggal>/` juga ditarik.
+  - Langkah media (tts, visuals, render) mulai bekerja hanya kalau QC lulus untuk skrip dan pengaturan sekarang (`_passed_qc`).
+  - `--force` di langkah rencana ikut mengulang langkah yang memakai hasilnya (`runctx.DEPENDS`). Langkah media diulang bila sidiknya berubah.
+  - Langkah yang belum dibuat ada di luar `pipeline.IMPLEMENTED` dan dilewati.
+  - `run_daily(cancel=Event, on_progress=fn(step, 0..1))`. `media.Cancelled` sengaja bukan `RuntimeError`: `engine.render_clip` menangkap `RuntimeError` untuk pindah permanen dari NVENC ke libx264.
 - Agen:
   - `research.py`: Wikipedia/RSS. URL sumber selalu diambil dari bahan riset, bukan dari tulisan LLM.
   - `writer.py`: rotasi format, skrip, QC + tulis ulang maks. 2×, SEO.
   - Masalah yang bisa dipastikan kode (panjang, format, visual, URL klaim) ditambahkan ke QC.
-- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan --genre <id>`.
+- Media (Fase I-3):
+  - `voice.py`: edge-tts per bagian narasi + jeda, timing dari WordBoundary (cadangan Whisper 16 kHz). Rentang kata otomatis per suara: `config.words_range()`.
+  - `visuals.py`: satu klip per segmen dengan jumlah frame tepat. Rantai cadangan ai_image → stock → motion_graphic → polos. Pembantunya `stock.py` (Pexels/Pixabay, cache 24 jam), `ai_images.py` (Cloudflare, kuota per tanggal UTC), dan `graphics.py` (template Pillow).
+  - `render.py`: base.mkv (klip + suara + musik), lalu `engine.render_clip` untuk subtitle, lalu validasi.
+  - Tes tidak boleh memanggil jaringan atau `engine.transcribe`. FFmpeg sungguhan boleh, asal klipnya pendek.
+- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan|media|video --genre <id>`.
 - Di heredoc Bash tool, backslash (`\n`) bisa berubah; tulis skrip/berkas dengan tool Write.
 - Dilarang:
   - Memakai `yt_dlp` atau `download_video` di modul channel. Ada tes yang menjaga ini.

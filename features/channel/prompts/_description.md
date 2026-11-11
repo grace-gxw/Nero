@@ -8,6 +8,9 @@ Sumber:
 
 {% if uses_stock %}
 Video: Pexels/Pixabay
+{% for c in credits %}
+- {{ c }}
+{% endfor %}
 {% endif %}
 {% if uses_ai %}
 Sebagian visual dibuat dengan AI.

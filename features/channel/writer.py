@@ -13,7 +13,7 @@ import re
 
 from rapidfuzz import fuzz
 
-from . import llm
+from . import config, llm
 from .config import ChannelConfig
 from .research import banned_hit
 from .schemas import QC, Issue, Metadata, Research, Script, SeoDraft, count_words
@@ -51,7 +51,7 @@ def script_issues(script: Script, cfg: ChannelConfig, research: Research, fmt: s
                   recent_hooks: list[str]) -> list[Issue]:
     """Masalah yang bisa dipastikan kode tanpa AI."""
     out: list[Issue] = []
-    lo, hi = cfg.video.words_range
+    lo, hi = config.words_range(cfg)
     if not lo <= script.word_count <= hi:
         fix = "tambah fakta/kalimat" if script.word_count < lo else "pendekkan kalimat atau buang satu segmen"
         out.append(Issue(type="length", detail=f"jumlah kata yang diucapkan {script.word_count}, harus {lo}–{hi}",
@@ -114,7 +114,7 @@ def write_script(cfg: ChannelConfig, research: Research, fmt: str, *, settings: 
     variables = {
         "niche": cfg.channel.niche, "audience": cfg.channel.audience, "tone": cfg.channel.tone,
         "banned_topics": cfg.channel.banned_topics, "format": fmt, "topic": c.topic, "angle": c.angle,
-        "words_min": cfg.video.words_range[0], "words_max": cfg.video.words_range[1],
+        "words_min": config.words_range(cfg)[0], "words_max": config.words_range(cfg)[1],
         "seconds_min": cfg.video.target_seconds[0], "seconds_max": cfg.video.target_seconds[1],
         "sources": _sources(research), "recent_hooks": list(recent_hooks), "learnings": learnings,
         "allowed_visuals": cfg.visuals.allowed_types, "max_ai_pct": int(cfg.visuals.max_ai_image_ratio * 100),
@@ -136,6 +136,8 @@ def write_script(cfg: ChannelConfig, research: Research, fmt: str, *, settings: 
 # --------------------------------------------------------------------------
 EVIDENCE_MATCH = 85      # rapidfuzz partial_ratio kutipan bukti terhadap teks sumber
 _DIGIT = re.compile(r"\d")
+# angka yang menempel pada nama diri (Voyager 1, Apollo 11, COVID-19): bukan klaim jumlah
+_NAMED_NUMBER = re.compile(r"\b(?:[A-Z][\w-]*\s+)+\d+[a-z]?\b|\b[A-Za-z]+-\d+\b")
 
 
 def _norm(text: str) -> str:
@@ -152,6 +154,21 @@ def _where(segment_id: int) -> str:
     return {0: "hook", -1: "cta"}.get(segment_id, f"segmen {segment_id}")
 
 
+def has_quantity(statement: str, research: Research) -> bool:
+    """Pernyataan memuat angka yang bisa jadi klaim. Angka bagian nama diri yang tertulis di sumber/topik
+    ("Benarkah Voyager 1 keluar dari tata surya?") tidak dihitung."""
+    c = research.chosen
+    known = " ".join([c.topic, *(f"{s.title} {s.snippet}" for s in c.sources)])
+    known = " ".join(known.split())
+    rest = statement
+    for m in _NAMED_NUMBER.finditer(statement):
+        parts = m.group(0).split()
+        names = [" ".join(parts[i:]) for i in range(len(parts)) if len(parts) - i >= 2 or "-" in parts[i]]
+        if any(n in known for n in names):
+            rest = rest.replace(m.group(0), " ")
+    return bool(_DIGIT.search(rest))
+
+
 def check_issues(qc: QC, research: Research) -> list[Issue]:
     """Masalah fakta dari pemeriksaan per pernyataan. Kode tidak percaya begitu saja pada "supported": kutipan
     buktinya harus ditemukan di sumber."""
@@ -159,7 +176,7 @@ def check_issues(qc: QC, research: Research) -> list[Issue]:
     for c in qc.checks:
         where = _where(c.segment_id)
         if c.kind == "framing":
-            if _DIGIT.search(c.statement):
+            if has_quantity(c.statement, research):
                 out.append(Issue(type="fact", detail=f"{where}: \"{c.statement}\" memuat angka tetapi tidak diperiksa "
                                                      "sebagai fakta", fix="beri bukti dari sumber atau hapus angkanya"))
             continue
@@ -182,15 +199,32 @@ ABSOLUTE_EN = ("only", "sole", "always", "never", "all ", "every", "most", "larg
                "lowest", "fastest", "longest", "oldest", "heaviest", "first", "many people", "majority", "entire")
 
 
+# Klaim tentang anggapan orang tetap butuh sumber, juga di dalam kalimat mitos/pertanyaan.
+BELIEF_ID = ("banyak orang", "banyak yang", "kebanyakan", "mayoritas", "sebagian besar", "semua orang")
+# Kalimat yang menyebut mitos/anggapan (format myth_vs_fact) atau bertanya tidak menyatakan isinya sebagai fakta.
+MYTH_OPENERS = ("benarkah", "ada anggapan", "anggapan bahwa", "konon", "mitos")
+
+
 def _markers(text: str, words) -> list[str]:
     low = f" {_norm(text)} "
     return [w for w in words if re.search(rf"(?<!\w){re.escape(w.strip())}(?!\w)", low)]
 
 
+def asserted_markers(text: str) -> list[str]:
+    """Kata mutlak yang dinyatakan sebagai fakta. Di kalimat tanya atau kalimat mitos ("Ada anggapan bahwa
+    semua…"), kata mutlak adalah isi mitos yang sedang dibantah, jadi hanya klaim tentang anggapan orang dihitung."""
+    used: list[str] = []
+    for sent in re.split(r"(?<=[.!?])\s+", (text or "").strip()):
+        s = _norm(sent)
+        words = BELIEF_ID if s.endswith("?") or s.startswith(MYTH_OPENERS) else ABSOLUTE_ID
+        used += [w for w in _markers(sent, words) if w not in used]
+    return used
+
+
 def absolute_issues(qc: QC, script: Script) -> list[Issue]:
     out = []
     for seg in script.segments:
-        used = _markers(seg.text, ABSOLUTE_ID)
+        used = asserted_markers(seg.text)
         if not used:
             continue
         evidence = " ".join(c.evidence for c in qc.checks if c.segment_id == seg.id and c.kind == "fact")
@@ -212,8 +246,8 @@ def review(cfg: ChannelConfig, script: Script, research: Research, fmt: str, *, 
     variables = {
         "script": script.model_dump_json(indent=1), "sources": _sources(research),
         "banned_topics": cfg.channel.banned_topics, "recent_topics": list(recent_topics),
-        "recent_hooks": list(recent_hooks), "words_min": cfg.video.words_range[0],
-        "words_max": cfg.video.words_range[1], "word_count": script.word_count, "audience": cfg.channel.audience,
+        "recent_hooks": list(recent_hooks), "words_min": config.words_range(cfg)[0],
+        "words_max": config.words_range(cfg)[1], "word_count": script.word_count, "audience": cfg.channel.audience,
     }
     qc = llm.generate_json("qc", variables, QC, cfg.llm.temperature_strict, cfg=cfg, settings=settings,
                            allow_local=False, check=lambda q: coverage_problems(q, script), log=log)
@@ -287,10 +321,24 @@ def claim_sources(script: Script) -> list[str]:
     return list(dict.fromkeys(c.source_url for c in script.claims if c.source_url))
 
 
+def stock_credits(visuals) -> list[str]:
+    """Kredit pembuat klip stok (pedoman API Pexels/Pixabay), satu baris per klip."""
+    out = []
+    for v in visuals.segments:
+        if v.type != "stock" or not v.source_id:
+            continue
+        site = {"pexels": "Pexels", "pixabay": "Pixabay"}.get(v.source, v.source)
+        line = f"{v.author or site} / {site}" + (f": {v.url}" if v.url else "")
+        if line not in out:
+            out.append(line)
+    return out
+
+
 def build_description(summary: str, script: Script, hashtags: list[str], *, uses_stock: bool,
-                      uses_ai: bool) -> str:
+                      uses_ai: bool, credits: list[str] = ()) -> str:
     return llm.render_prompt("_description", {"summary": summary.strip(), "sources": claim_sources(script),
-                                              "uses_stock": uses_stock, "uses_ai": uses_ai, "hashtags": hashtags})
+                                              "uses_stock": uses_stock, "uses_ai": uses_ai, "hashtags": hashtags,
+                                              "credits": list(credits)})
 
 
 def seo(cfg: ChannelConfig, script: Script, research: Research, *, settings: dict | None = None,
@@ -317,7 +365,7 @@ def seo(cfg: ChannelConfig, script: Script, research: Research, *, settings: dic
     hashtags = normalize_hashtags(d.hashtags)
     if len(hashtags) < 3:   # AI tidak memberi cukup hashtag: lengkapi dari tag
         hashtags = normalize_hashtags(d.hashtags + ["".join(w.capitalize() for w in t.split()) for t in tags])
-    return Metadata(title=d.title.strip(), tags=tags,
+    return Metadata(title=d.title.strip(), tags=tags, summary=d.summary.strip(),
                     hashtags=hashtags, category_id=cfg.youtube.category_id, language=cfg.channel.language,
                     description=build_description(d.summary, script, hashtags, uses_stock=uses_stock,
                                                   uses_ai=uses_ai))

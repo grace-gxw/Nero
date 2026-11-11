@@ -120,3 +120,61 @@ def load_learnings() -> str:
 def save_learnings(text: str) -> None:
     with _lock:
         write_text_atomic(data_path("learnings.md"), text.strip() + "\n")
+
+
+# --------------------------------------------------------------------------
+# Bersih-bersih berkas sementara
+# --------------------------------------------------------------------------
+KEEP_RUN_DAYS = 7          # klip antara, gambar AI, dan suara mentah run yang lebih tua dari ini dihapus
+KEEP_STOCK_DAYS = 2        # klip stok yang diunduh (klip yang dipakai tidak boleh dipakai lagi 30 hari)
+KEEP_SEARCH_HOURS = 24     # cache hasil pencarian Pexels/Pixabay (aturan Pixabay: cache 24 jam)
+_HEAVY_DIRS = ("clips", "images", "tts")
+_HEAVY_FILES = ("voice.wav", "base.mkv")
+
+
+def _remove(path: str) -> int:
+    import shutil
+    if os.path.isdir(path):
+        n = sum(len(files) for _, _, files in os.walk(path))
+        shutil.rmtree(path, ignore_errors=True)
+        return n
+    try:
+        os.remove(path)
+        return 1
+    except OSError:
+        return 0
+
+
+def prune_runs(today: date, now: float | None = None, keep: tuple[str, ...] = ()) -> int:
+    """Hapus berkas besar yang tidak diperlukan lagi. JSON, final.mp4, voice.mp3, dan captions tetap disimpan.
+    `today` = tanggal hari ini yang sebenarnya; folder di `keep` dan run yang sedang berjalan (.lock) tidak
+    disentuh. Hasil: jumlah berkas yang dihapus."""
+    import time
+    root = data_path("runs")
+    if not os.path.isdir(root):
+        return 0
+    now = time.time() if now is None else now
+    removed = 0
+    for name in os.listdir(root):
+        if name.startswith("."):
+            continue
+        try:
+            day = date.fromisoformat(name)
+        except ValueError:
+            continue
+        if (today - day).days <= KEEP_RUN_DAYS or name in keep or os.path.exists(os.path.join(root, name, ".lock")):
+            continue
+        for part in (*_HEAVY_DIRS, *_HEAVY_FILES):
+            path = os.path.join(root, name, part)
+            if os.path.exists(path):
+                removed += _remove(path)
+    for sub, max_age in (("stock", KEEP_STOCK_DAYS * 86400), ("search", KEEP_SEARCH_HOURS * 3600)):
+        folder = os.path.join(root, ".cache", sub)
+        if not os.path.isdir(folder):
+            continue
+        for f in os.listdir(folder):
+            path = os.path.join(folder, f)
+            with contextlib.suppress(OSError):
+                if now - os.path.getmtime(path) > max_age:
+                    removed += _remove(path)
+    return removed

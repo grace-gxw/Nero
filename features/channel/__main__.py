@@ -5,6 +5,9 @@ CLI Channel Otomatis (jalankan dari folder Nero):
   .venv\\Scripts\\python -m features.channel config       tampilkan pengaturan (tanpa nilai kunci)
   .venv\\Scripts\\python -m features.channel genres       daftar genre siap pakai
   .venv\\Scripts\\python -m features.channel run-daily --dry-run --only plan [--genre fakta-sains]
+  .venv\\Scripts\\python -m features.channel run-daily --dry-run --only video [--genre fakta-sains]
+
+--only: plan = riset s.d. SEO; media = suara, visual, render; video = plan + media; atau satu nama langkah.
 """
 from __future__ import annotations
 
@@ -76,8 +79,11 @@ def main(argv=None) -> int:
     r.add_argument("--date", help="tanggal run YYYY-MM-DD (bawaan: hari ini, zona waktu pengaturan)")
     r.add_argument("--dry-run", action="store_true", help="uji coba: tanpa upload & tanpa kirim Telegram")
     r.add_argument("--force", action="append", choices=list(STEPS), metavar="STEP",
-                   help="jalankan ulang langkah ini (dan semua sesudahnya) walau hasilnya sudah ada")
-    r.add_argument("--only", choices=["plan", *STEPS], help="jalankan hanya langkah ini (plan = riset s.d. SEO)")
+                   help="jalankan ulang langkah ini walau hasilnya sudah ada. Langkah yang memakai hasilnya ikut "
+                        "diulang bila hasilnya berubah")
+    r.add_argument("--only", choices=[*pipeline.ALIASES, *STEPS],
+                   help="jalankan hanya langkah ini (plan = riset s.d. SEO, media = suara s.d. render, "
+                        "video = plan + media)")
     r.add_argument("--genre", choices=[g["id"] for g in genres.GENRES],
                    help="pakai genre ini untuk run ini saja (tidak disimpan)")
     r.set_defaults(func=cmd_run_daily)

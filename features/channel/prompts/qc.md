@@ -28,7 +28,9 @@ LANGKAH 1 — "checks": periksa SETIAP pernyataan di hook (segment_id 0), setiap
 
 LANGKAH 2 — laporkan setiap masalah sebagai satu "issues":
 1. fact: setiap pernyataan "fact" yang supported=false, klaim yang source_url-nya tidak memuat fakta itu,
-   dan generalisasi berlebihan dari sumber.
+   dan generalisasi berlebihan dari sumber. Juga pernyataan yang saling bertentangan di dalam naskah, atau
+   yang dibantah sumber lain (sumber bisa usang: kalimat "sekarang/masih …" di satu sumber bisa sudah tidak
+   berlaku menurut tanggal atau sumber lain). Klaim yang bertentangan tetap fact walau ada kutipannya.
 2. policy: topik terlarang, nasihat medis/keuangan/hukum sebagai saran pribadi, klaim menyesatkan,
    menyebut/meniru orang nyata secara merugikan, kutipan palsu, konten tidak pantas untuk penonton,
    atau "image_prompt" yang melanggar aturan gambar AI.

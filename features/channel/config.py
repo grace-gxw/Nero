@@ -25,6 +25,11 @@ FORMATS = ("myth_vs_fact", "list_3", "story", "question", "explainer")
 VISUAL_TYPES = ("stock", "ai_image", "motion_graphic")
 PROVIDERS = ("gemini", "gemini_lite", "groq", "ollama")
 VOICES = {"id-ID-ArdiNeural": "Pria (Ardi)", "id-ID-GadisNeural": "Wanita (Gadis)"}
+# Kecepatan bicara terukur (detik per kata, rate +5%, tanpa jeda), uji nyata edge-tts 12 Nov 2026 pada naskah 111 kata.
+# Gadis ±31% lebih lambat, jadi jumlah kata yang pas untuk 45–58 detik berbeda per suara.
+VOICE_SECONDS_PER_WORD = {"id-ID-ArdiNeural": 0.357, "id-ID-GadisNeural": 0.469}
+VIDEO_TAIL_SECONDS = 0.7      # video berlanjut sebentar setelah suara selesai
+NARRATION_GAPS = 7            # jeda antar-bagian narasi (hook + ±6 segmen + CTA)
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
@@ -51,7 +56,8 @@ class ChannelInfo(_Section):
 
 class VideoCfg(_Section):
     target_seconds: tuple[int, int] = (45, 58)
-    words_range: tuple[int, int] = (110, 135)
+    # None = dihitung otomatis dari suara, rate, dan target_seconds (lihat words_range()); isi untuk mengunci
+    words_range: tuple[int, int] | None = None
     fps: int = 30
     resolution: tuple[int, int] = (1080, 1920)
     formats_rotation: list[Literal[FORMATS]] = Field(default_factory=lambda: list(FORMATS), min_length=3)
@@ -67,7 +73,7 @@ class VideoCfg(_Section):
     @field_validator("words_range")
     @classmethod
     def _words(cls, v):
-        return _pair(v, "words_range")
+        return v if v is None else _pair(v, "words_range")
 
 
 class ScheduleCfg(_Section):
@@ -121,11 +127,21 @@ class LLMCfg(_Section):
 
 class AIImageCfg(_Section):
     provider: Literal["cloudflare"] = "cloudflare"
-    model: str = "@cf/black-forest-labs/flux-1-schnell"
-    width: int = 768
-    height: int = 1344
-    steps: int = 4
+    # flux-2-klein-4b: murah & bisa langsung vertikal (width/height 256–1920). flux-1-schnell (usulan SPEC) tidak
+    # bisa diatur ukurannya, jadi gambarnya harus dipotong dari persegi. Dicek di dokumentasi Cloudflare Nov 2026.
+    model: str = "@cf/black-forest-labs/flux-2-klein-4b"
+    width: int = Field(768, ge=256, le=1920)
+    height: int = Field(1344, ge=256, le=1920)
+    steps: int = Field(4, ge=1, le=8)            # hanya untuk model berformat JSON (flux-2 selalu 4 langkah)
     style_suffix: str = "cinematic lighting, high detail, vertical composition, no text"
+    # Perkiraan biaya: petak 512×512 keluaran × neurons_per_tile + langkah × neurons_per_step (harga Workers AI,
+    # Nov 2026). klein-4b: 26,05 per petak, tanpa biaya langkah (768×1344 = 6 petak ≈ 156 neurons).
+    # flux-1-schnell: 4,8 per petak + 9,6 per langkah. neurons_per_image mengisi angka sendiri (None = otomatis).
+    neurons_per_tile: float = Field(26.05, ge=0)
+    neurons_per_step: float = Field(0, ge=0)
+    neurons_per_image: float | None = Field(None, gt=0)
+    daily_neurons: int = Field(10000, ge=0)      # kuota gratis harian Workers AI (reset 00.00 UTC)
+    stop_ratio: float = Field(0.8, ge=0, le=1)   # berhenti membuat gambar AI di 80% kuota (SPEC 6.8b)
 
 
 class VisualsCfg(_Section):
@@ -141,6 +157,7 @@ class TTSCfg(_Section):
     engine: Literal["edge", "piper"] = "edge"
     voice: Literal[tuple(VOICES)] = "id-ID-ArdiNeural"
     rate: str = "+5%"
+    pause_ms: int = Field(300, ge=0, le=1500)    # jeda antarbagian narasi (hook, segmen, CTA)
 
     @field_validator("rate")
     @classmethod
@@ -172,6 +189,25 @@ class YouTubeCfg(_Section):
 class NotifyCfg(_Section):
     telegram: bool = True
     weekly_report_day: Literal[DAYS] = "monday"
+
+
+def words_range(cfg: ChannelConfig) -> tuple[int, int]:
+    """Jumlah kata naskah. Otomatis: dari kecepatan suara terukur supaya narasi + jeda + ekor video masuk
+    target_seconds, dengan sisa 1 dtk di bawah dan 3 dtk di atas (rate bisa dinaikkan bila kelebihan)."""
+    if cfg.video.words_range:
+        return tuple(cfg.video.words_range)
+    base = VOICE_SECONDS_PER_WORD.get(cfg.tts.voice, max(VOICE_SECONDS_PER_WORD.values()))
+    pace = base * 1.05 / (1 + int(cfg.tts.rate.rstrip("%")) / 100)
+    overhead = VIDEO_TAIL_SECONDS + NARRATION_GAPS * cfg.tts.pause_ms / 1000
+    lo_s, hi_s = cfg.video.target_seconds
+    lo = max(20, int(-(-(lo_s + 1 - overhead) // pace)))
+    hi = int((hi_s - 3 - overhead) // pace)
+    window = max(8, round(0.1 * (lo + hi) / 2))   # target durasi yang sempit tidak boleh membuat rentang 1 kata
+    if hi - lo < window:
+        mid = (lo + hi) / 2
+        lo = max(20, round(mid - window / 2))
+        hi = max(round(mid + window / 2), lo + window)
+    return lo, hi
 
 
 class ChannelConfig(_Section):

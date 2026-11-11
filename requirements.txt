@@ -15,3 +15,5 @@ Jinja2>=3.1,<4
 tzdata
 rapidfuzz>=3.14,<4
 feedparser>=6.0,<7
+# Channel Otomatis: suara (edge-tts memakai layanan Microsoft Edge, gratis, tanpa key)
+edge-tts>=7.3.1,<8

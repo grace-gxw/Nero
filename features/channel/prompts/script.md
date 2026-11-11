@@ -45,6 +45,8 @@ ATURAN NASKAH:
 - Untuk myth_vs_fact: tulis mitos sebagai pertanyaan ("Benarkah…?") atau anggapan ("Ada anggapan
   bahwa…"), jangan "banyak orang mengira" atau "kebanyakan orang percaya" (itu klaim yang butuh sumber).
 - Kalimat penutup/kesimpulan hanya merangkum fakta yang sudah disebut, tanpa klaim baru.
+- Bila sumber saling bertentangan atau memakai kata "sekarang/masih/saat ini" yang mungkin sudah usang, pakai
+  fakta yang bertanggal atau yang didukung sumber lain, dan jangan memuat dua klaim yang saling bertentangan.
 - "on_screen_text" (opsional): maksimal 5 kata yang muncul di atas layar, hanya bila membantu.
 
 ATURAN VISUAL PER SEGMEN ("visual_type"):
