@@ -299,3 +299,20 @@ Temuan review Fase I-5 (2 reviewer + 2 ronde verifikasi adversarial, 12 Nov 2026
 - Ronde 3–4: hasil yang dipakai ulang kini memperbarui catatan asal naskahnya (tanpa ini video sah terblokir
   selamanya), cek status tetap ketat sampai sekali lolos, channel baru tanpa video (daftar upload 404) tidak lagi
   menggagalkan upload pertama, dan sesi upload terikat ke channel tempat ia dimulai.
+
+Temuan Fase I-6 (riset dokumen resmi, 12 Nov 2026):
+- Instagram kini membatasi 5 hashtag per post (Help Center; dulu 30). Caption Instagram Nero memakai maks. 5.
+- Label AI: TikTok mewajibkan label untuk gambar/video AI yang realistis, tetapi mengecualikan narasi TTS generik.
+  Meta mewajibkan label untuk reel dengan narasi suara AI yang realistis. Halaman dan Telegram mengingatkan keduanya.
+- Telegram dipakai lewat `requests` (bukan `httpx`). Video >50 MB tidak bisa dikirim bot; Nero mengirim pesan
+  bahwa videonya ada di Folder hasil (pengganti "artifact GitHub Actions" di SPEC).
+- `manual_pack` ditaruh di alias plan/media/video (tanpa AI, cepat), sehingga caption sudah ada saat uji coba.
+- Review adversarial I-6 (3 reviewer + skeptis, 12 Nov 2026), semuanya diperbaiki dan dites:
+  - Ringkasan Telegram bisa menampilkan status/tautan YouTube dari video naskah sebelumnya. Kini status YouTube, QC,
+    video, dan caption hanya dikirim bila milik naskah, judul, dan visual sekarang.
+  - "Kirim ke Telegram" atau "Unggah uji" bisa menghapus/menimpa tanda gagal run harian. Kini kiriman uji tidak
+    memakai penanda run.
+  - Salinan caption lama tertinggal di Folder hasil. Kini ikut ditarik saat naskah, judul, atau visual dibuat ulang.
+  - Upload video ke Telegram tidak bisa dibatalkan dan bisa terkirim dua kali bila jawabannya hilang. Kini diunggah
+    bertahap (bisa dibatalkan) dan tidak dicoba ulang otomatis bila hasilnya tidak pasti.
+  - Hashtag platform (#Shorts…, #fyp…) dan hashtag di judul ikut masuk caption. Kini disaring.

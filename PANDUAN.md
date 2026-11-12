@@ -320,6 +320,34 @@ Draf isian (bahasa Inggris, sesuaikan):
 - *How the client uses API data:* "videos.insert to upload my own videos (private or scheduled), videos.list to verify processing and privacy status, playlistItems.insert to add my videos to my playlist, search.list (max 3 calls/day) to see which topics are popular. No API data is shown to other people, sold, or stored longer than 30 days."
 - *Quota justification:* "One upload per day; the default quota is sufficient."
 
+### TikTok, Instagram, dan Telegram
+
+**Paket unggah manual.** TikTok dan Instagram selalu Anda unggah sendiri; Nero tidak pernah mengunggah ke sana. Untuk setiap run, Nero menyiapkan:
+- **Caption TikTok**: judul + ajakan singkat (≤150 karakter) dan 3–5 hashtag.
+- **Caption Instagram Reels**: judul, ringkasan, ajakan, dan maksimal 5 hashtag. Sejak akhir 2025 Instagram hanya menerima 5 hashtag per post.
+- **Pengingat label AI**:
+  - TikTok: nyalakan "AI-generated content" bila video memakai gambar AI yang realistis. Narasi TTS generik tidak perlu label.
+  - Instagram: nyalakan "Add AI label" karena narasinya memakai suara AI. Contoh resmi Meta persis kasus ini.
+
+Caption tampil di hasil run (tombol **Salin**) dan tersimpan sebagai `tiktok_caption.txt` dan `instagram_caption.txt` di Folder hasil. Teksnya bisa diubah di `features\channel\prompts\_caption_*.md`. Unggah selalu berkas MP4 dari Nero, bukan video yang diunduh dari platform lain: video ber-watermark platform lain tidak direkomendasikan TikTok dan Instagram.
+
+**Telegram (opsional).** Paket harian dan peringatan bila run gagal bisa dikirim ke ponsel Anda.
+1. Di Telegram, buka **@BotFather**, kirim `/newbot`, isi nama, lalu username yang berakhiran `bot`. Salin token yang diberikan; token ini rahasia.
+2. Buka bot baru Anda dan tekan **Start**. Bot tidak bisa mengirim pesan sebelum Anda memulai chat.
+3. Di Nero: **Pengaturan channel → Telegram**, tempel token, lalu **Simpan**. Buka Pengaturan lagi, tekan **Cari chat ID**, pilih chat Anda (**Pakai**), lalu **Simpan**.
+4. Tekan **Kirim pesan uji**. Untuk mencoba paket lengkap, buka hasil run lalu tekan **Kirim ke Telegram**.
+
+Isi paket harian, berurutan:
+- ringkasan: topik, judul, skor QC, durasi, status YouTube + tautan Studio, dan pengingat label AI;
+- video (maks. 50 MB, batas bot Telegram);
+- caption TikTok;
+- caption Instagram;
+- naskah lengkap.
+
+Caption dan naskah dikirim sebagai blok teks yang mudah disalin dari ponsel. Bila run harian gagal, Nero mengirim nama langkah yang gagal dan 30 baris log terakhir.
+
+Kiriman otomatis hanya berjalan bila Channel Otomatis **aktif** dan "Kirim paket harian & peringatan gagal ke Telegram" dicentang. Uji coba (`--dry-run`) hanya menuliskan isi ringkasannya di log. Kiriman yang terputus dilanjutkan dari bagian yang belum terkirim, dan paket yang sama tidak dikirim dua kali. Baris perintahnya: `telegram-chats`, `telegram-test`, dan `telegram-send --date YYYY-MM-DD`.
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |
@@ -336,6 +364,8 @@ Draf isian (bahasa Inggris, sesuaikan):
 | AI lokal lambat / "memori tidak cukup" | Pilih model yang lebih kecil (**qwen3-vl:2b-instruct**) di **Pengaturan → AI lokal gratis**. |
 | "Izin YouTube sudah tidak berlaku" | Tekan **Hubungkan ulang** di Pengaturan channel → YouTube. Bila terjadi tiap minggu, status aplikasi di Google Cloud masih **Testing**: buka Google Auth Platform → Audience → **Publish app**. |
 | "redirect_uri_mismatch" / "invalid_client" saat menghubungkan YouTube | Pastikan jenis client OAuth-nya **Desktop app** (bukan Web application), lalu salin ulang Client ID & secret. |
+| Telegram: "Bot belum boleh mengirim ke chat ini" / "chat not found" | Buka bot Anda di Telegram dan tekan **Start**, lalu **Cari chat ID** lagi dan simpan. |
+| Telegram: "Cari chat ID" kosong | Kirim pesan apa saja ke bot (Telegram hanya menyimpannya 24 jam), lalu tekan lagi. |
 | "Model selalu berpikir panjang" | Model yang terpilih adalah versi *thinking*. Unduh versi **-instruct** lalu pilih di Pengaturan. |
 
 Gunakan aplikasi ini untuk video milik Anda sendiri atau yang Anda punya izin untuk mengunggah ulang.
