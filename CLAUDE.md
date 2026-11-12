@@ -60,12 +60,23 @@ Panduan singkat untuk sesi Claude Code berikutnya. Detail untuk pengguna ada di 
   - `jobs.py` menjalankan satu uji coba (dry-run) per proses di thread latar dengan progres per langkah.
   - `runs.py` membaca folder run untuk halaman. Hasil yang usang disembunyikan lewat `<langkah>_src` = sidik naskah di `inputs.json`.
   - Frontend ada di `frontend/src/features/channel/`. Setelah mengubah frontend, jalankan `npm run build` (menyalin ke `web/`, ikut di-commit).
+- YouTube (Fase I-5, `youtube.py`, REST lewat `requests`, tanpa pustaka Google):
+  - OAuth client "Desktop app": listener sementara di `http://127.0.0.1:<port acak>` (tanpa path) + PKCE S256, scope yang diizinkan dicek. Refresh token di `channel.keys.yt_refresh_token`, hanya diisi/dihapus lewat Hubungkan/Putuskan (POST /settings mengabaikannya). Access token hanya di memori. Info akun tanpa rahasia: `data/channel/youtube_account.json`.
+  - Upload resumable per 8 MB. Sesi disimpan di `runs/<tgl>/upload_session.json` (berkas, sidik isi permintaan, channel, judul, asal naskah). Sesi dilanjutkan hanya bila berkas, isi, dan channel sama; bila berbeda, sesi lama dicek dulu (selesai = dipakai apa adanya, belum = ditinggal).
+  - Catatan sesi **tidak dihapus** sebelum `video_id` tersimpan; sesi yang kedaluwarsa/tidak terpakai hanya ditandai (`state`), supaya cek duplikat (judul sekarang + judul sesi, sejak sehari sebelum sesi dibuat) tetap bisa diulang bila gagal.
+  - `youtube.json` ditulis begitu ada `video_id` (penjaga upload ganda), lalu `on_uploaded` mencatat riwayat. Video yang ditemukan (bukan diunggah saat itu) dicatat dengan privasi/jadwal/judul asli dari YouTube dan keterangan `adopted`.
+  - Galat server token = `YouTubeError` status 0; hanya 401/403 dari alamat upload = `SessionUnusable`. Satu upload sekaligus lewat `data/channel/upload.lock`; Hubungkan/Putuskan ditolak selama itu.
+  - Cek tetap ketat sampai sekali lolos (`strict_ok`); video private tanpa jadwal yang ditayangkan pengguna bukan masalah. Cek ulang (`recheck_upload`) menolak video di channel lain tanpa mengubah `youtube.json`.
+  - Sesi dari channel lain tidak pernah ditinggal diam-diam (upload diminta menghubungkan channel itu). Channel baru tanpa video: daftar upload 404 = belum ada upload.
+  - Langkah `publish_youtube` hanya untuk run sungguhan dengan `enabled` dan `youtube.api_upload` menyala; video `needs_review` tidak diunggah otomatis. `pipeline.upload_test()` = unggah uji private atas perintah pengguna (boleh walau nonaktif). Syarat keduanya ada di `_upload_ready` (halaman memakai yang sama lewat `upload_block`, plus tombol "Buat ulang video"): QC lulus untuk naskah & pengaturan sekarang, render valid, `tts_src`/`visuals_src`/`render_src`/`seo_src` = sidik naskah, dan `render_media` = sidik suara+visual sekarang (run lama: `fp_render`). Deskripsi disusun ulang dari visual video saat upload. Juga sidik `seo` = `fp_seo` sekarang (kategori/tag). Langkah yang dipakai ulang memperbarui `<langkah>_src` (`_mark_src`). Genre `--genre` dicatat di `inputs.json` setelah langkah rencana/media selesai, dan dipakai lagi lewat `run_config`. `state.upsert_history` membaca riwayat secara ketat (tidak menimpa berkas yang rusak).
+  - Pencarian tren: maks. 3 `search.list` per hari, hanya judul, masuk prompt riset sebagai petunjuk minat (tidak disimpan di `research.json`; cache dihapus `prune_runs` setelah 2 hari).
+  - Tes memakai `FakeGoogle` (patch `requests.post/put/request`); listener loopback diuji dengan socket 127.0.0.1 sungguhan.
 - Pembatalan: `cancel.py` memasang event batal per thread (`cancel_scope`). Panggilan AI (`llm`) dan riset memeriksanya, jadi Batal juga menghentikan langkah rencana.
 - Windows: berkas yang sedang dibaca/diputar tidak bisa diganti. Tulis dan hapus lewat `state.replace_retry`/`remove_retry`, dan baca dengan `state.read_text` (berkas langsung ditutup).
-- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan|media|video --genre <id>`.
+- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan|media|video --genre <id> | youtube-auth | youtube-status | youtube-upload --date D | youtube-check --date D | youtube-disconnect`.
 - Di heredoc Bash tool, backslash (`\n`) bisa berubah; tulis skrip/berkas dengan tool Write.
 - Dilarang:
   - Memakai `yt_dlp` atau `download_video` di modul channel. Ada tes yang menjaga ini.
   - Upload ke TikTok/IG secara otomatis.
   - Upload ke YouTube sebelum QC dan validasi render lulus.
-- YouTube mengunci video yang di-upload lewat API dari project yang belum diaudit. Karena itu `youtube.api_upload` bawaannya `false`, dan Nero menyiapkan paket unggah manual.
+- `youtube.api_upload` bawaannya `false` (keputusan pengguna: paket unggah manual dulu). Alasan awalnya, kunci private untuk project yang belum diaudit, dicabut YouTube pada 2 Nov 2026. Jangan mengubah bawaannya tanpa keputusan pengguna.

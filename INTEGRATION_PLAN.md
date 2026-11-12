@@ -259,3 +259,43 @@ Temuan Fase I-4 (review adversarial 4 agen, 12 Nov 2026):
     memperlakukannya sebagai framing (`writer.is_myth_statement`), dan prompt QC menjelaskan hal yang sama.
   - Gemini ringan konsisten menulis ±100–115 kata. Naskah di bawah batas keras ditulis ulang oleh QC, jadi uji coba
     dengan model ringan lebih sering gagal QC. Key Groq tetap disarankan.
+
+Temuan Fase I-5 (riset dokumen resmi Google, 12 Nov 2026):
+- **R1 sudah tidak berlaku.** Revision history YouTube Data API, 2 Nov 2026: video yang diunggah lewat
+  `videos.insert` dari project yang belum diverifikasi "are no longer restricted to private viewing mode".
+  Halaman bantuan "Videos locked as private" belum diperbarui. Audit tidak lagi diperlukan untuk 1 video per hari.
+  `youtube.api_upload` tetap `false` sampai pengguna memutuskan (keputusan no. 5); unggah uji private dipakai
+  untuk memastikan di YouTube Studio bahwa video tidak dikunci.
+- Kuota kini per bucket (sejak 1 Jun 2026): `videos.insert` 100 panggilan/hari, `search.list` 100 panggilan/hari
+  (1 unit per panggilan, bukan 100 unit), metode lain 10.000 unit/hari. Reset 00.00 waktu Pasifik.
+- `privacyStatus` bawaan YouTube sekarang `public`, jadi Nero selalu mengisinya eksplisit.
+- Klien YouTube ditulis dengan `requests` (konvensi Nero), bukan `google-api-python-client` +
+  `google-auth-oauthlib` seperti rencana awal. Alasannya: tidak ada dependensi baru, dan semua langkah protokol
+  (PKCE, upload resumable, cek status sesi) bisa diuji tanpa jaringan.
+- OAuth "Desktop app": redirect loopback resmi Google adalah `http://127.0.0.1:<port>` tanpa path. Karena itu
+  "Hubungkan YouTube" membuka penerima sementara di port acak (sama dengan CLI `youtube-auth`), bukan rute di
+  server Nero.
+- Status aplikasi **Testing** di Google Auth Platform membuat refresh token kedaluwarsa tiap 7 hari. Pengguna
+  harus menekan **Publish app** (In production, tanpa verifikasi untuk pemakaian pribadi).
+- `playlistItems.insert` butuh scope `youtube.force-ssl`; scope ini hanya diminta bila ID playlist diisi.
+- Pencarian tren mengikuti Developer Policies III.E.4: hanya judul, tanpa statistik `videos.list` (SPEC 6.3
+  meminta statistik, tetapi metrik turunan dari data API dilarang tanpa audit), tidak disimpan di hasil riset, dan
+  cache dihapus setelah 2 hari. Bawaannya mati (kata kunci kosong).
+- Video `needs_review` tidak diunggah otomatis (sesuai catatan Fase I-3). Pengguna bisa mengunggahnya lewat unggah
+  uji (private) setelah menonton.
+
+Temuan review Fase I-5 (2 reviewer + 2 ronde verifikasi adversarial, 12 Nov 2026), semuanya diperbaiki dan dites:
+- Upload yang dilanjutkan memakai judul/privasi/jadwal dari sesi lama walau permintaan sudah berubah. Kini sesi
+  dilanjutkan hanya bila isi permintaan, berkas, dan channel sama.
+- Catatan sesi sempat dihapus sebelum cek duplikat berhasil, sehingga satu cek yang gagal bisa berujung upload
+  kedua. Kini catatan hanya ditandai sampai `video_id` tersimpan.
+- Galat server token (mis. 403 dari proxy) sempat dianggap "sesi rusak". Kini hanya 401/403 dari alamat upload.
+- Batal saat menunggu YouTube memproses video menghilangkan entri riwayat. Kini riwayat dicatat begitu
+  `video_id` ada, dan cek status melengkapi entri yang hilang. Riwayat yang tidak terbaca tidak lagi ditimpa.
+- Penerima loopback OAuth bisa macet oleh koneksi diam (preconnect browser). Kini satu thread per koneksi, batas
+  waktu per koneksi, dan batal/kedaluwarsa tidak menyimpan token.
+- Syarat unggah kini juga memastikan suara dan visual video berasal dari naskah dan render terbaru; deskripsi
+  (kredit stok, pengungkapan AI) disusun dari visual yang benar-benar ada di video.
+- Ronde 3–4: hasil yang dipakai ulang kini memperbarui catatan asal naskahnya (tanpa ini video sah terblokir
+  selamanya), cek status tetap ketat sampai sekali lolos, channel baru tanpa video (daftar upload 404) tidak lagi
+  menggagalkan upload pertama, dan sesi upload terikat ke channel tempat ia dimulai.

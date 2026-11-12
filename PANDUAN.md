@@ -178,7 +178,7 @@ Tanpa pengaturan apa pun, setiap fitur bekerja dengan algoritma lokal (gratis); 
 
 ## Channel Otomatis (dalam pengembangan)
 
-Fitur kedua Nero: setiap hari membuat satu video pendek orisinal untuk channel Anda sendiri, mulai dari riset topik, skrip, pemeriksaan fakta, suara, visual, sampai render. Hasilnya berupa paket siap unggah. Rancangannya ada di `SPEC.md` dan `INTEGRATION_PLAN.md`. Fitur ini masih dibangun bertahap dan **nonaktif** sampai Anda menyalakannya.
+Fitur kedua Nero: setiap hari membuat satu video pendek orisinal untuk channel Anda sendiri, mulai dari riset topik, skrip, pemeriksaan fakta, suara, visual, sampai render. Hasilnya berupa paket siap unggah, dan bisa diunggah ke YouTube sebagai private (lihat **Menghubungkan YouTube**). Rancangannya ada di `SPEC.md` dan `INTEGRATION_PLAN.md`. Fitur ini masih dibangun bertahap dan **nonaktif** sampai Anda menyalakannya.
 
 ### Halaman Channel Otomatis
 
@@ -194,10 +194,11 @@ Buka **Channel Otomatis** di menu kiri Nero.
    - Video bisa ditonton dan diunduh.
    - **Paket unggah manual** berisi judul, deskripsi, tag, dan hashtag, masing-masing dengan tombol **Salin**.
    - Ada juga hasil pemeriksaan fakta (QC), naskah per segmen (jenis visual, sumber klip, cadangan yang dipakai), sumber riset, dan catatan proses.
+   - Kotak **YouTube** menampilkan tombol **Unggah uji (private)** bila YouTube sudah terhubung, atau status video yang sudah diunggah.
    - Pilih tanggal lain di **Riwayat uji coba**.
    - Video yang lolos pemeriksaan disalin ke **Folder hasil** (`output\channel\<tanggal>\`).
 
-**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, dan sakelar **Aktifkan**. Jadwal harian dan upload belum tersedia, jadi sakelar ini belum menjalankan apa pun. Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
+**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, YouTube (hubungkan, mode tayang, jam tayang, playlist, kata kunci tren, upload otomatis), dan sakelar **Aktifkan**. Jadwal harian belum tersedia, jadi sakelar ini belum menjalankan apa pun. Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
 
 Kunci API disimpan di `data/settings.json` dan diisi dari halaman Nero; nilainya tidak pernah ditampilkan lagi. Untuk baris perintah, setiap kunci juga bisa diisi lewat environment variable. Nilai dari environment variable menimpa yang tersimpan, dan halaman menandainya "dari environment variable":
 
@@ -207,7 +208,7 @@ Kunci API disimpan di `data/settings.json` dan diisi dari halaman Nero; nilainya
 | Groq | `GROQ_API_KEY` | AI cadangan (gratis, console.groq.com) |
 | Pexels, Pixabay | `PEXELS_API_KEY`, `PIXABAY_API_KEY` | video stok |
 | Cloudflare Workers AI | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | gambar AI |
-| YouTube | `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN` | upload & statistik |
+| YouTube | `YT_CLIENT_ID`, `YT_CLIENT_SECRET`, `YT_REFRESH_TOKEN` | upload & statistik. Refresh token diisi otomatis oleh **Hubungkan YouTube**; env var hanya untuk baris perintah/CI. |
 | Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | notifikasi ke ponsel |
 
 Uji koneksi AI dari folder `Nero`:
@@ -247,6 +248,78 @@ Teks perintah untuk AI ada di `features\channel\prompts\`. Boleh diedit, misalny
 - Menjalankan ulang memakai hasil yang masih cocok. Bila skrip, suara, atau pengaturan berubah (misalnya suara diganti, topik terlarang ditambah), langkah yang terdampak dibuat ulang otomatis. Video lama di folder hasil ditarik begitu langkah sebelumnya dijalankan ulang. Untuk membuat ulang satu langkah: `--force tts`, `--force visuals` (misalnya setelah mengisi key Pexels/Cloudflare), atau `--force render` (misalnya setelah mengganti gaya subtitle).
 - QC dengan model Gemini ringan masih bisa meloloskan nuansa yang keliru, misalnya kalimat usang di Wikipedia ("sekarang berada di…"). Tonton dan baca naskahnya sebelum mengunggah; key Groq membuat pemeriksaan lebih teliti.
 
+### Menghubungkan YouTube
+
+Nero bisa mengunggah video ke channel YouTube Anda lewat YouTube Data API (gratis). Upload dari run harian bawaannya **mati** (`youtube.api_upload = false`): Nero hanya menyiapkan video dan paket unggah, lalu Anda yang mengunggah. Tombol **Unggah uji (private)** di hasil run selalu bisa dipakai untuk mencoba jalurnya.
+
+**1. Siapkan Google Cloud (sekali saja, ±15 menit)**
+
+1. Buka [console.cloud.google.com](https://console.cloud.google.com), masuk dengan akun Google pemilik channel, lalu buat project baru (misalnya "Nero Channel").
+2. **APIs & Services → Library**: cari **YouTube Data API v3**, tekan **Enable**. Untuk statistik video nanti (Fase I-7), aktifkan juga **YouTube Analytics API**.
+3. Buka **Google Auth Platform → Overview → Get started**:
+   - App name bebas, tetapi **jangan memakai kata "YouTube"**. Isi email dukungan.
+   - Audience: **External**. Isi email kontak, setujui kebijakannya, lalu **Create**.
+4. **Data Access → Add or remove scopes**: centang `youtube.upload`, `youtube.readonly`, dan `yt-analytics.readonly`. Bila memakai playlist, tambahkan `youtube.force-ssl`. Tekan **Update**, lalu **Save**. Kalau scope tidak muncul, pastikan API di langkah 2 sudah aktif.
+5. **Audience → Publish app**, lalu konfirmasi sampai statusnya **In production**.
+   - Jangan biarkan di **Testing**: izin dari project Testing kedaluwarsa tiap 7 hari, jadi Anda harus menghubungkan ulang setiap minggu.
+   - Aplikasi tidak perlu diverifikasi Google karena hanya Anda yang memakainya. Akibatnya, saat menghubungkan muncul peringatan "Google belum memverifikasi aplikasi ini". Klik **Lanjutan / Advanced**, lalu lanjutkan ke aplikasi Anda.
+6. **Clients → Create client**, Application type **Desktop app**, nama bebas (misalnya "Nero"), lalu **Create**.
+   - **Salin Client ID dan Client secret saat itu juga** (atau unduh JSON-nya). Secret hanya ditampilkan sekali. Bila hilang, tambahkan secret baru di halaman client yang sama.
+   - Client yang tidak dipakai 6 bulan dihapus otomatis oleh Google; upload rutin menjaganya tetap aktif.
+
+**2. Hubungkan di Nero**
+
+1. **Pengaturan channel → YouTube**: tempel Client ID dan Client secret, lalu **Simpan**.
+2. Buka Pengaturan lagi, tekan **Hubungkan YouTube**. Halaman Google terbuka di tab baru. Pilih akun dan channel tujuan (termasuk Brand Account bila channel Anda memakainya), lalu izinkan semua akses.
+3. Setelah halaman Google menampilkan "YouTube terhubung", kembali ke Nero. Pengaturan menampilkan **✓ Terhubung ke &lt;nama channel&gt;**.
+
+Cara kerjanya: Nero membuka "penerima" sementara di `http://127.0.0.1:<port acak>` di komputer Anda sendiri (bukan internet) untuk menerima jawaban Google. Penerima ini berhenti sendiri setelah selesai atau setelah 10 menit. Token izin disimpan di `data/settings.json` dan tidak pernah ditampilkan. **Putuskan** mencabut izin di akun Google dan menghapus tokennya. Bisa juga lewat baris perintah: `python -m features.channel youtube-auth`.
+
+**3. Unggah uji**
+
+Di **Hasil uji coba**, pilih run yang videonya lolos pemeriksaan, lalu tekan **Unggah uji (private)**.
+- Video diunggah sebagai **private**: hanya Anda yang bisa melihatnya. Video baru tayang bila Anda sendiri yang mengubahnya di YouTube Studio.
+- Sebelum mengunggah, Anda diminta menyatakan video mematuhi [Persyaratan Layanan YouTube](https://www.youtube.com/t/terms).
+- Setelah terunggah, kotak YouTube menampilkan status ("Masih diproses" → "Siap di YouTube"), tautan YouTube Studio, dan tombol **Cek status**.
+- Setiap run hanya diunggah **satu kali**. Menekan tombol lagi, menjalankan ulang run, atau `--force` tidak mengunggah ulang.
+- Upload yang terputus (internet mati, Nero ditutup) dilanjutkan dari bagian yang sudah terkirim saat dicoba lagi. Bila catatan sesinya hilang, Nero memeriksa dulu apakah video berjudul sama sudah ada di channel.
+- Video yang gagal QC, gagal validasi render, dibuat dari naskah sebelumnya, atau belum dibuat ulang setelah suara/visual berubah tidak bisa diunggah. Kotak YouTube menuliskan alasannya, dan bila bisa diperbaiki ada tombol **Buat ulang video** untuk tanggal itu (hasil yang masih cocok dipakai ulang).
+- Bila Anda menayangkan video uji di YouTube Studio, **Cek status** tidak menganggapnya masalah.
+- Bila membuat ulang berarti riset dan naskah baru (misalnya genre atau penonton diganti), Nero meminta konfirmasi dulu.
+- Upload yang terputus terikat ke channel tempat ia dimulai. Bila Anda menghubungkan channel lain, Nero meminta channel lama dihubungkan lagi dulu, supaya video yang sama tidak terunggah ke dua channel.
+- Video yang diunggah masuk riwayat (`data\channel\history.json`), supaya topiknya tidak diulang 60 hari.
+
+**4. Upload otomatis (nanti)**
+
+Menyalakan **Upload otomatis lewat API** membuat run harian mengunggah sendiri, tetapi hanya bila Channel Otomatis **aktif**. Jadwal harian dibuat di Fase I-8. Mode tayangnya:
+
+| Mode | Hasil di YouTube |
+|---|---|
+| Manual (bawaan) | Private tanpa jadwal; Anda yang menayangkan. |
+| Jendela tinjau | Private dengan jadwal tayang di **jam tayang** (bawaan 18.00 WIB; dikirim ke YouTube dalam UTC). Bila jam itu sudah lewat atau tinggal <15 menit, dijadwalkan besok. Batalkan di Studio sebelum jam tayang bila tidak cocok. |
+| Otomatis | Langsung publik (tidak disarankan). |
+
+Video yang ditandai **perlu dicek** tidak pernah diunggah otomatis. Setelah upload, Nero memeriksa status video (`videos.list`). Bila privasi atau jadwalnya tidak sesuai (misalnya YouTube mengunci video sebagai private), hasilnya ditandai **Ada masalah**.
+
+Lain-lain:
+- **Playlist (opsional):** isi ID playlist (diawali `PL`), simpan, lalu **Hubungkan ulang**. Izin playlist (`youtube.force-ssl`) hanya diminta bila ID playlist diisi.
+- **Kata kunci tren (opsional, maks. 3):** riset mencari judul Shorts yang banyak ditonton 7 hari terakhir. Judul itu hanya dipakai sebagai petunjuk minat penonton, bukan sumber fakta, dan tidak disimpan di hasil riset. Cache-nya dihapus setelah 2 hari.
+- **Kuota gratis per hari:** 100 upload, 100 pencarian (Nero memakai maks. 3), dan 10.000 unit untuk panggilan lain. Kuota pulih pukul 00.00 waktu Pasifik (14.00–15.00 WIB). Pemakaian tampil di Pengaturan → YouTube.
+- **Video AI:** bila pengaturan `contains_synthetic_media` aktif (bawaan, wajib selama gambar AI dipakai), video ditandai "konten sintetis" di YouTube.
+
+**Audit YouTube API.** Sampai Oktober 2026, video yang diunggah lewat API dari project yang belum diaudit dikunci private oleh YouTube. Sejak **2 November 2026** aturan itu dicabut (YouTube Data API revision history), dan kuota bawaan 100 upload per hari jauh di atas kebutuhan 1 video per hari. Jadi audit **tidak diperlukan** untuk Nero. Unggah uji tetap berguna untuk memastikan: buka videonya di YouTube Studio dan cek tidak ada label terkunci.
+
+Bila suatu saat Anda tetap ingin mengajukan audit (misalnya untuk kuota tambahan), formulirnya ada di support.google.com/youtube/contact/yt_api_form. Syaratnya:
+- situs publik HTTPS yang menjelaskan alat ini dan memuat kebijakan privasi (alamat 127.0.0.1 tidak memenuhi syarat);
+- rekaman layar alur hubungkan → unggah → verifikasi;
+- nomor project Google Cloud.
+
+Draf isian (bahasa Inggris, sesuaikan):
+- *Describe your work related to YouTube:* "Personal tool for my own YouTube channel. It researches a topic from public sources (Wikipedia, RSS), writes and fact-checks an original script, renders a short vertical video with my own voice-over/graphics and licensed stock footage, then uploads it to my channel as private for my review."
+- *API client:* "Nero, a desktop application that runs only on my own computer; single user (the channel owner); no public users."
+- *How the client uses API data:* "videos.insert to upload my own videos (private or scheduled), videos.list to verify processing and privacy status, playlistItems.insert to add my videos to my playlist, search.list (max 3 calls/day) to see which topics are popular. No API data is shown to other people, sold, or stored longer than 30 days."
+- *Quota justification:* "One upload per day; the default quota is sufficient."
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |
@@ -261,6 +334,8 @@ Teks perintah untuk AI ada di `features\channel\prompts\`. Boleh diedit, misalny
 | "Batas pemakaian gratis Gemini tercapai" | Kuota gratis harian/menit habis. Nero otomatis memakai AI lokal; kuota harian kembali tengah malam waktu Pasifik (± pukul 14.00–15.00 WIB). |
 | "API key Gemini tidak valid / ditolak" | Buat kunci baru di Google AI Studio, tempel di Pengaturan, tekan **Cek**. |
 | AI lokal lambat / "memori tidak cukup" | Pilih model yang lebih kecil (**qwen3-vl:2b-instruct**) di **Pengaturan → AI lokal gratis**. |
+| "Izin YouTube sudah tidak berlaku" | Tekan **Hubungkan ulang** di Pengaturan channel → YouTube. Bila terjadi tiap minggu, status aplikasi di Google Cloud masih **Testing**: buka Google Auth Platform → Audience → **Publish app**. |
+| "redirect_uri_mismatch" / "invalid_client" saat menghubungkan YouTube | Pastikan jenis client OAuth-nya **Desktop app** (bukan Web application), lalu salin ulang Client ID & secret. |
 | "Model selalu berpikir panjang" | Model yang terpilih adalah versi *thinking*. Unduh versi **-instruct** lalu pilih di Pengaturan. |
 
 Gunakan aplikasi ini untuk video milik Anda sendiri atau yang Anda punya izin untuk mengunggah ulang.
