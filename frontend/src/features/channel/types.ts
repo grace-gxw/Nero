@@ -1,8 +1,18 @@
 /** Bentuk data dari /api/channel/* (lihat features/channel/api.py, runs.py, jobs.py, schemas.py). */
 
-export type StepId = "research" | "script" | "qc" | "seo" | "tts" | "visuals" | "render" | "publish_youtube";
+export type StepId =
+  | "research"
+  | "script"
+  | "qc"
+  | "seo"
+  | "tts"
+  | "visuals"
+  | "render"
+  | "publish_youtube"
+  | "manual_pack"
+  | "notify";
 export type StepState = "antri" | "proses" | "selesai" | "dipakai" | "gagal" | "batal" | "lewat" | "belum";
-export type RunMode = "plan" | "video" | "media" | "upload";
+export type RunMode = "plan" | "video" | "media" | "upload" | "notify";
 export type JobStatus = "proses" | "selesai" | "gagal" | "batal";
 export type VisualType = "stock" | "ai_image" | "motion_graphic" | "plain";
 
@@ -117,6 +127,7 @@ export interface ChannelState {
   niche: string;
   ready: ReadyItem[];
   youtube: YouTubeStatus;
+  telegram: { configured: boolean };
 }
 
 export interface Segment {
@@ -225,6 +236,10 @@ export interface RunDetail extends Omit<RunSummary, "qc" | "render"> {
   youtube: YouTubeResult | null;
   /** video di YouTube dibuat dari naskah sebelumnya (run diulang setelah diunggah) */
   youtube_stale: boolean;
+  /** caption TikTok & Instagram (unggah manual) milik naskah sekarang */
+  pack: Captions | null;
+  /** paket yang sudah terkirim otomatis ke Telegram */
+  telegram: { source: string; sent: string[]; sent_at: string } | null;
   /** QC lulus, video & judul milik naskah sekarang, belum diunggah */
   upload_ready: boolean;
   /** alasan belum bisa diunggah (kosong bila siap atau tidak ada video) */
@@ -267,6 +282,7 @@ export interface ChannelConfig {
     contains_synthetic_media: boolean;
   };
   research: { youtube_search_queries: string[] };
+  notify: { telegram: boolean };
 }
 
 export interface Settings {
@@ -281,4 +297,14 @@ export interface Settings {
   genres: Genre[];
   styles: CaptionStyle[];
   steps: Record<StepId, string>;
+}
+
+export interface Captions {
+  tiktok: string;
+  instagram: string;
+  hashtags: string[];
+  /** nyalakan "AI-generated content" di TikTok */
+  tiktok_ai_label: boolean;
+  /** nyalakan "Add AI label" di Instagram */
+  instagram_ai_label: boolean;
 }

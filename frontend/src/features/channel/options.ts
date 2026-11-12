@@ -67,4 +67,5 @@ export const KEY_PAGES: Record<string, string> = {
   pexels: "https://www.pexels.com/api/",
   pixabay: "https://pixabay.com/api/docs/",
   cloudflare: "https://dash.cloudflare.com/?to=/:account/ai/workers-ai",
+  telegram: "https://t.me/BotFather",
 };

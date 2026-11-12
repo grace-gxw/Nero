@@ -191,6 +191,7 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
         {running && <Loader2Icon className="size-4 animate-spin" />}
         <span className="min-w-0 flex-1">
           {job.mode === "upload" && <span className="text-muted-foreground">Unggah ke YouTube · </span>}
+          {job.mode === "notify" && <span className="text-muted-foreground">Kirim ke Telegram · </span>}
           {running && job.cancelling
             ? "Membatalkan... (menunggu langkah ini berhenti)"
             : running
@@ -207,7 +208,13 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
             size="sm"
             variant="outline"
             onClick={onCancel}
-            title={job.mode === "upload" ? "Hentikan unggah (bisa dilanjutkan nanti)" : "Hentikan uji coba"}
+            title={
+              job.mode === "upload"
+                ? "Hentikan unggah (bisa dilanjutkan nanti)"
+                : job.mode === "notify"
+                  ? "Hentikan kiriman ke Telegram"
+                  : "Hentikan uji coba"
+            }
             disabled={job.cancelling}
           >
             <XIcon /> Batal

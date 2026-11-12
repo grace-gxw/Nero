@@ -114,7 +114,8 @@ export function ChannelProvider({ children }: { children: React.ReactNode }) {
     const prev = lastJob.current;
     lastJob.current = { id: job.id, status: job.status };
     if (!prev || prev.id !== job.id || prev.status !== "proses" || job.status === "proses") return;
-    const what = job.mode === "upload" ? "Unggah ke YouTube" : "Uji coba";
+    const what =
+      job.mode === "upload" ? "Unggah ke YouTube" : job.mode === "notify" ? "Kirim ke Telegram" : "Uji coba";
     if (job.status === "selesai" && job.warning) toast.warning(job.warning);
     else if (job.status === "selesai") toast.success(`${what} selesai`);
     else if (job.status === "batal") toast(`${what} dibatalkan`);

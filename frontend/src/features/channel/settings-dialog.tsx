@@ -56,6 +56,16 @@ const YT_KEYS: KeyDef[] = [
   },
 ];
 const TIME_RE = /^([01]?\d|2[0-3])[:.][0-5]\d$/;
+const TG_KEYS: KeyDef[] = [
+  {
+    name: "telegram_token",
+    label: "Token bot Telegram",
+    page: KEY_PAGES.telegram,
+    link: "Buka @BotFather",
+    hint: "Di @BotFather kirim /newbot, lalu salin tokennya.",
+  },
+  { name: "telegram_chat_id", label: "Chat ID", hint: "Isi lewat Cari chat ID di bawah." },
+];
 
 export function ChannelSettingsDialog() {
   const { settings, settingsOpen, setSettingsOpen, loadSettings } = useChannel();
@@ -99,6 +109,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const [playlist, setPlaylist] = useState(c.youtube.playlist_id);
   const [kids, setKids] = useState(c.youtube.made_for_kids);
   const [ytQueries, setYtQueries] = useState(c.research.youtube_search_queries.join(", "));
+  const [notifyTg, setNotifyTg] = useState(c.notify.telegram);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
@@ -139,6 +150,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
           approval: { mode: approval },
           youtube: { api_upload: apiUpload, playlist_id: playlist.trim(), made_for_kids: kids },
           research: { youtube_search_queries: queries },
+          notify: { telegram: notifyTg },
         },
         keys: filled,
       });
@@ -346,6 +358,36 @@ function SettingsForm({ settings }: { settings: Settings }) {
           (private)&quot; di hasil run tetap bisa dipakai. Judul populer dari kata kunci tren hanya jadi petunjuk minat
           penonton untuk riset (bukan sumber fakta) dan tidak disimpan.
         </p>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">Telegram</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Paket harian (ringkasan, video, caption, naskah) dan peringatan bila run gagal dikirim ke ponsel Anda.
+          Buat bot di @BotFather, buka bot itu lalu tekan <b>Start</b>, kemudian tekan <b>Cari chat ID</b>.
+        </p>
+        <div className="flex flex-col gap-3 rounded-xl border p-3">
+          {TG_KEYS.map((k) => (
+            <KeyRow
+              key={k.name}
+              k={k}
+              settings={settings}
+              value={keys[k.name] ?? ""}
+              onChange={(v) => setKeys((s) => ({ ...s, [k.name]: v }))}
+              onClear={() => clearKey(k.name, k.label)}
+            />
+          ))}
+        </div>
+        <TelegramTools
+          settings={settings}
+          tokenUnsaved={Boolean((keys.telegram_token ?? "").trim())}
+          chatUnsaved={Boolean((keys.telegram_chat_id ?? "").trim())}
+          onPick={(id) => setKeys((s) => ({ ...s, telegram_chat_id: id }))}
+        />
+        <Label className="cursor-pointer font-normal">
+          <Checkbox checked={notifyTg} onCheckedChange={(v) => setNotifyTg(v === true)} />
+          Kirim paket harian & peringatan gagal ke Telegram (saat Channel Otomatis aktif)
+        </Label>
       </section>
 
       <section className="flex flex-col gap-2">
@@ -578,6 +620,87 @@ function YouTubeConnect({ unsaved }: { unsaved: boolean }) {
           (pulih 14.00–15.00 WIB).
         </p>
       )}
+    </div>
+  );
+}
+
+type ChatInfo = { id: string; type: string; name: string };
+
+/** Cari chat ID (getUpdates) dan kirim pesan uji. Keduanya memakai token/chat ID yang sudah disimpan. */
+function TelegramTools({
+  settings,
+  tokenUnsaved,
+  chatUnsaved,
+  onPick,
+}: {
+  settings: Settings;
+  tokenUnsaved: boolean;
+  chatUnsaved: boolean;
+  onPick: (id: string) => void;
+}) {
+  const [chats, setChats] = useState<ChatInfo[] | null>(null);
+  const [bot, setBot] = useState("");
+  const [busy, setBusy] = useState(false);
+  const hasToken = settings.keys.telegram_token ?? false;
+  const hasChat = settings.keys.telegram_chat_id ?? false;
+
+  async function find() {
+    if (tokenUnsaved || !hasToken) {
+      toast.error("Simpan dulu token bot, lalu buka Pengaturan lagi.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await post<{ ok: boolean; bot: string; chats: ChatInfo[] }>(`${API}/telegram/chats`);
+      setBot(r.bot);
+      setChats(r.chats);
+    } catch {}
+    setBusy(false);
+  }
+
+  async function test() {
+    if (tokenUnsaved || chatUnsaved || !hasToken || !hasChat) {
+      toast.error("Simpan dulu token bot dan chat ID, lalu buka Pengaturan lagi.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await post(`${API}/telegram/test`);
+      toast.success("Pesan uji terkirim. Cek Telegram Anda.");
+    } catch {}
+    setBusy(false);
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" onClick={find} disabled={busy}>
+          {busy && <Loader2Icon className="animate-spin" />} Cari chat ID
+        </Button>
+        <Button size="sm" variant="outline" onClick={test} disabled={busy}>
+          Kirim pesan uji
+        </Button>
+      </div>
+      {chats !== null &&
+        (chats.length === 0 ? (
+          <p className="text-xs text-warn">
+            Belum ada chat{bot ? ` untuk @${bot}` : ""}. Buka bot di Telegram, tekan Start (atau kirim pesan apa saja),
+            lalu tekan Cari chat ID lagi.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1 rounded-lg border p-2 text-xs">
+            {chats.map((c) => (
+              <li key={c.id} className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate">
+                  {c.name} <span className="text-muted-foreground">({c.type}, {c.id})</span>
+                </span>
+                <Button size="xs" variant="ghost" onClick={() => (onPick(c.id), toast("Chat ID diisi. Tekan Simpan."))}>
+                  Pakai
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ))}
     </div>
   );
 }

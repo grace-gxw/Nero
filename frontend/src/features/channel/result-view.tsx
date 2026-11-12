@@ -10,6 +10,7 @@ import {
   FolderOpenIcon,
   Loader2Icon,
   RefreshCwIcon,
+  SendIcon,
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -37,7 +38,7 @@ import {
 } from "./api";
 import { FORMAT_LABELS, ISSUE_LABELS, STEP_DOT, STEP_STATE_LABELS, VISUAL_LABELS } from "./options";
 import { useChannel } from "./store";
-import type { Job, RunDetail, RunSummary, SegmentVisual, YouTubeResult } from "./types";
+import type { Captions, Job, RunDetail, RunSummary, SegmentVisual, YouTubeResult } from "./types";
 
 const TOS_URL = "https://www.youtube.com/t/terms";
 
@@ -200,7 +201,8 @@ function VideoBox({ detail }: { detail: RunDetail }) {
   // unggah hanya membaca berkas video, jadi pemutar tetap tampil
   const job = state?.job;
   const rebuilding =
-    holdDay === detail.date || (job?.status === "proses" && job.day === detail.date && job.mode !== "upload");
+    holdDay === detail.date ||
+    (job?.status === "proses" && job.day === detail.date && job.mode !== "upload" && job.mode !== "notify");
   if (rebuilding) {
     return (
       <div className="grid aspect-[9/16] w-full place-items-center rounded-lg bg-muted text-center text-xs text-muted-foreground sm:w-64">
@@ -487,6 +489,77 @@ function UploadPack({ detail }: { detail: RunDetail }) {
           "Video ini tidak memakai gambar AI."
         )}
       </p>
+      {detail.pack && <SocialPack captions={detail.pack} />}
+      <TelegramSend detail={detail} />
+    </div>
+  );
+}
+
+/** Caption TikTok & Instagram (selalu diunggah manual) + pengingat label AI. */
+function SocialPack({ captions }: { captions: Captions }) {
+  return (
+    <div className="flex flex-col gap-3 border-t pt-3">
+      <p className="text-sm font-semibold">TikTok & Instagram (unggah manual)</p>
+      <CopyRow label="Caption TikTok" value={captions.tiktok} done="Caption TikTok disalin" />
+      <CopyRow label="Caption Instagram" value={captions.instagram} done="Caption Instagram disalin" />
+      <ul className="flex flex-col gap-0.5 text-[11px] leading-relaxed text-muted-foreground">
+        <li>
+          TikTok:{" "}
+          {captions.tiktok_ai_label ? (
+            <b className="text-warn">nyalakan &quot;AI-generated content&quot; (ada gambar AI yang realistis).</b>
+          ) : (
+            "label AI tidak perlu (tanpa gambar AI; narasi TTS generik dikecualikan)."
+          )}
+        </li>
+        <li>
+          Instagram:{" "}
+          {captions.instagram_ai_label ? (
+            <b className="text-warn">nyalakan &quot;Add AI label&quot; (narasi memakai suara AI).</b>
+          ) : (
+            "label AI tidak perlu."
+          )}
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+/** Kirim paket run ini ke Telegram (atas perintah pengguna) + status kiriman otomatis. */
+function TelegramSend({ detail }: { detail: RunDetail }) {
+  const { state, trackJob, refresh, setSettingsOpen } = useChannel();
+  const [sending, setSending] = useState(false);
+  const busy = jobRunning(state?.job);
+  const configured = state?.telegram?.configured ?? false;
+
+  async function send() {
+    setSending(true);
+    try {
+      const r = await post<{ ok: boolean; job: Job }>(`${API}/telegram/send`, { date: detail.date });
+      trackJob(r.job.id);
+      toast("Mengirim ke Telegram...");
+    } catch {}
+    setSending(false);
+    refresh();
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+      {configured ? (
+        <Button size="sm" variant="outline" onClick={send} disabled={busy || sending}>
+          {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />} Kirim ke Telegram
+        </Button>
+      ) : (
+        <Button size="sm" variant="ghost" onClick={() => setSettingsOpen(true)}>
+          <SendIcon /> Atur Telegram
+        </Button>
+      )}
+      <span className="text-[11px] text-muted-foreground">
+        {detail.telegram?.sent_at
+          ? `Terkirim otomatis ${detail.telegram.sent_at.replace("T", " ").slice(0, 16)}.`
+          : configured
+            ? "Ringkasan, video, caption, dan naskah dikirim ke ponsel Anda."
+            : "Kirim paket ini ke ponsel lewat bot Telegram."}
+      </span>
     </div>
   );
 }
