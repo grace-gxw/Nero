@@ -236,3 +236,26 @@ Temuan Fase I-3 (dokumentasi resmi & uji nyata 12 Nov 2026):
   target ±3 dtk walau rate disesuaikan.
 - Kunci run milik proses yang sudah mati (Nero ditutup paksa) langsung dilepas lewat pemeriksaan PID, tidak
   menunggu 3 jam.
+
+Temuan Fase I-4 (review adversarial 4 agen, 12 Nov 2026):
+- Setelah riset/naskah diulang dengan "Rencana saja", video, suara, dan metadata lama milik naskah sebelumnya
+  masih tampil sebagai "Video siap" di samping judul baru. Kini pipeline mencatat naskah asal tiap hasil
+  (`<langkah>_src` di inputs.json), dan halaman hanya menampilkan hasil yang cocok dengan naskah sekarang.
+- Windows: halaman yang memantau run membaca berkas JSON setiap 1–5 detik. Penulisan/penghapusan berkas oleh
+  pipeline bisa bentrok sesaat (PermissionError), sehingga run gagal acak. Kini penulisan atomik dan penghapusan
+  mencoba ulang sebentar, dan pembaca langsung menutup berkas. Video yang sedang diputar browser menahan berkasnya
+  ±15 dtk setelah dijeda, jadi penghapusan video dicoba sampai 20 dtk, dan halaman menyembunyikan pemutar video
+  tanggal yang sedang dibuat ulang.
+- Batal tadinya hanya dicek di antara langkah, sehingga riset/naskah/QC bisa jalan bermenit-menit setelah Batal.
+  Kini event batal dipasang per thread (`cancel.py`) dan dicek sebelum setiap panggilan AI/permintaan Wikipedia.
+  Jeda coba ulang juga langsung berhenti. Batal di langkah terakhir tidak lagi dilaporkan "selesai".
+- Simpan pengaturan kini atomik: genre + isian lain divalidasi utuh sebelum disimpan. Genre hanya dikirim bila
+  diganti, supaya pengaturan lain tidak tertimpa. Volume musik dibatasi -60..0 dB. Key dari environment variable
+  ditandai dan tidak bisa "dihapus" dari halaman.
+- Uji nyata dari halaman (build produksi, 12 Nov) menghasilkan tiga temuan:
+  - "Mulai dari riset lagi" memilih topik yang sama, karena topik hari itu belum masuk riwayat. Kini topik riset
+    sebelumnya ikut dihindari.
+  - QC ringan menggolongkan kalimat mitos ("Ada anggapan bahwa…") sebagai fakta tanpa bukti. Kini kode
+    memperlakukannya sebagai framing (`writer.is_myth_statement`), dan prompt QC menjelaskan hal yang sama.
+  - Gemini ringan konsisten menulis ±100–115 kata. Naskah di bawah batas keras ditulis ulang oleh QC, jadi uji coba
+    dengan model ringan lebih sering gagal QC. Key Groq tetap disarankan.

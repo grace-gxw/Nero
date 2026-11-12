@@ -55,6 +55,13 @@ Panduan singkat untuk sesi Claude Code berikutnya. Detail untuk pengguna ada di 
   - `visuals.py`: satu klip per segmen dengan jumlah frame tepat. Rantai cadangan ai_image → stock → motion_graphic → polos. Pembantunya `stock.py` (Pexels/Pixabay, cache 24 jam), `ai_images.py` (Cloudflare, kuota per tanggal UTC), dan `graphics.py` (template Pillow).
   - `render.py`: base.mkv (klip + suara + musik), lalu `engine.render_clip` untuk subtitle, lalu validasi.
   - Tes tidak boleh memanggil jaringan atau `engine.transcribe`. FFmpeg sungguhan boleh, asal klipnya pendek.
+- Halaman `/channel` (Fase I-4):
+  - Rute ada di `api.py`.
+  - `jobs.py` menjalankan satu uji coba (dry-run) per proses di thread latar dengan progres per langkah.
+  - `runs.py` membaca folder run untuk halaman. Hasil yang usang disembunyikan lewat `<langkah>_src` = sidik naskah di `inputs.json`.
+  - Frontend ada di `frontend/src/features/channel/`. Setelah mengubah frontend, jalankan `npm run build` (menyalin ke `web/`, ikut di-commit).
+- Pembatalan: `cancel.py` memasang event batal per thread (`cancel_scope`). Panggilan AI (`llm`) dan riset memeriksanya, jadi Batal juga menghentikan langkah rencana.
+- Windows: berkas yang sedang dibaca/diputar tidak bisa diganti. Tulis dan hapus lewat `state.replace_retry`/`remove_retry`, dan baca dengan `state.read_text` (berkas langsung ditutup).
 - CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan|media|video --genre <id>`.
 - Di heredoc Bash tool, backslash (`\n`) bisa berubah; tulis skrip/berkas dengan tool Write.
 - Dilarang:

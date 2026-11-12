@@ -180,7 +180,26 @@ Tanpa pengaturan apa pun, setiap fitur bekerja dengan algoritma lokal (gratis); 
 
 Fitur kedua Nero: setiap hari membuat satu video pendek orisinal untuk channel Anda sendiri, mulai dari riset topik, skrip, pemeriksaan fakta, suara, visual, sampai render. Hasilnya berupa paket siap unggah. Rancangannya ada di `SPEC.md` dan `INTEGRATION_PLAN.md`. Fitur ini masih dibangun bertahap dan **nonaktif** sampai Anda menyalakannya.
 
-Kunci API disimpan di `data/settings.json` (diisi dari halaman Nero; halamannya menyusul di fase berikutnya). Untuk baris perintah, setiap kunci juga bisa diisi lewat environment variable, dan nilainya menimpa yang tersimpan:
+### Halaman Channel Otomatis
+
+Buka **Channel Otomatis** di menu kiri Nero.
+
+1. **Uji coba.** Pilih genre bila belum, lalu pilih **Video lengkap** (riset sampai render, ±3–6 menit) atau **Rencana saja** (riset, naskah, cek fakta, judul; ±1–2 menit), lalu tekan **Jalankan uji coba**.
+   - Progres tiap langkah tampil langsung. Langkah yang hasilnya masih cocok ditandai "dipakai ulang".
+   - **Batal** menghentikan run. Bila sedang menunggu AI, pembatalan terjadi begitu jawaban berikutnya masuk.
+   - Centang **Mulai dari riset lagi** untuk topik baru di hari yang sama.
+   - Uji coba tidak pernah mengunggah atau mengirim apa pun.
+2. **Kesiapan.** Menunjukkan key yang wajib (Gemini) dan yang opsional (Groq, Pexels/Pixabay, Cloudflare, folder musik). Tombol **Atur key & pengaturan** membuka pengaturan channel.
+3. **Hasil uji coba.**
+   - Video bisa ditonton dan diunduh.
+   - **Paket unggah manual** berisi judul, deskripsi, tag, dan hashtag, masing-masing dengan tombol **Salin**.
+   - Ada juga hasil pemeriksaan fakta (QC), naskah per segmen (jenis visual, sumber klip, cadangan yang dipakai), sumber riset, dan catatan proses.
+   - Pilih tanggal lain di **Riwayat uji coba**.
+   - Video yang lolos pemeriksaan disalin ke **Folder hasil** (`output\channel\<tanggal>\`).
+
+**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, dan sakelar **Aktifkan**. Jadwal harian dan upload belum tersedia, jadi sakelar ini belum menjalankan apa pun. Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
+
+Kunci API disimpan di `data/settings.json` dan diisi dari halaman Nero; nilainya tidak pernah ditampilkan lagi. Untuk baris perintah, setiap kunci juga bisa diisi lewat environment variable. Nilai dari environment variable menimpa yang tersimpan, dan halaman menandainya "dari environment variable":
 
 | Kunci | Environment variable | Untuk |
 |---|---|---|
