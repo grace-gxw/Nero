@@ -29,7 +29,7 @@ export interface GlobalSettings {
 export interface FeatureSummary {
   busy: number;
   queue: number;
-  stats: { label: string; value: number }[];
+  stats: { label: string; value: number | string }[];
 }
 
 /** Status AI lokal dari /api/local-ai. */

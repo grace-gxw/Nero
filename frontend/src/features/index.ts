@@ -1,4 +1,4 @@
-import { ScissorsIcon, type LucideIcon } from "lucide-react";
+import { ScissorsIcon, TvMinimalPlayIcon, type LucideIcon } from "lucide-react";
 
 /**
  * Daftar fitur Nero (pasangan dari features/__init__.py di backend).
@@ -28,5 +28,14 @@ export const FEATURES: Feature[] = [
       "Ubah video panjang menjadi clip vertikal 9:16 lengkap dengan subtitle, judul hook, dan caption. Untuk TikTok, Reels, dan Shorts.",
     href: "/clip",
     icon: ScissorsIcon,
+  },
+  {
+    id: "channel",
+    name: "Channel Otomatis",
+    tagline: "Video pendek orisinal setiap hari",
+    description:
+      "Riset topik, naskah yang dicek ke sumber, suara, visual, dan render video Shorts 45–58 detik. Siap diunggah ke channel Anda sendiri.",
+    href: "/channel",
+    icon: TvMinimalPlayIcon,
   },
 ];
