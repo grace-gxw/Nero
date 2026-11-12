@@ -40,6 +40,8 @@ export function toSummary(d: RunDetail): RunSummary {
 /** Status satu run untuk lencana di daftar & kepala hasil. */
 export function runStatus(r: RunSummary): { label: string; tone: "ok" | "warn" | "bad" | "info" | "muted" } {
   if (r.running) return { label: "Sedang berjalan", tone: "info" };
+  if (r.uploaded?.status === "masalah") return { label: "Diunggah · ada masalah", tone: "warn" };
+  if (r.uploaded) return { label: r.uploaded.verified ? "Diunggah ke YouTube" : "Diunggah · diproses", tone: "ok" };
   if (r.failed?.cancelled) return { label: "Dibatalkan", tone: "muted" };
   if (r.failed) return { label: "Gagal", tone: "bad" };
   if (r.qc && !r.qc.passed) return { label: "QC gagal", tone: "bad" };

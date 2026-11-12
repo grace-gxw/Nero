@@ -45,7 +45,8 @@ export function ReadyCard() {
           {optionalMissing > 0
             ? "Tanpa key video stok dan gambar AI, visual memakai grafik buatan Nero dan videonya ditandai perlu dicek."
             : "Semua sumber visual siap."}{" "}
-          Upload ke YouTube dan kiriman Telegram belum tersedia; untuk sekarang video diunggah sendiri.
+          Kiriman Telegram belum tersedia. Video diunggah sendiri memakai paket unggah, atau diunggah uji (private)
+          lewat YouTube setelah dihubungkan di Pengaturan.
         </p>
       </CardContent>
     </Card>

@@ -8,15 +8,18 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
+  Loader2Icon,
   RefreshCwIcon,
+  UploadIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { SimpleSelect } from "@/components/fields";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { api, openFolder } from "@/lib/api";
+import { api, openFolder, post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import {
@@ -27,13 +30,16 @@ import {
   copyText,
   dateLabel,
   downloadUrl,
+  jobRunning,
   runStatus,
   seconds,
   toSummary,
 } from "./api";
 import { FORMAT_LABELS, ISSUE_LABELS, STEP_DOT, STEP_STATE_LABELS, VISUAL_LABELS } from "./options";
 import { useChannel } from "./store";
-import type { RunDetail, RunSummary, SegmentVisual } from "./types";
+import type { Job, RunDetail, RunSummary, SegmentVisual, YouTubeResult } from "./types";
+
+const TOS_URL = "https://www.youtube.com/t/terms";
 
 /** Bagian "3. Hasil": pilih tanggal, lalu lihat video, paket unggah, QC, dan naskah. */
 export function ResultSection() {
@@ -127,6 +133,7 @@ function RunDetailView({ day, kick }: { day: string; kick: number }) {
       <div className="grid gap-5 p-4 sm:p-5 lg:grid-cols-[auto_1fr]">
         <VideoBox detail={detail} />
         <div className="flex min-w-0 flex-col gap-5">
+          <YouTubeBox detail={detail} />
           {detail.metadata && <UploadPack detail={detail} />}
           {detail.qc && <QCBox detail={detail} />}
         </div>
@@ -190,7 +197,10 @@ const CATEGORY_NAMES: Record<string, string> = {
 
 function VideoBox({ detail }: { detail: RunDetail }) {
   const { state, holdDay } = useChannel();
-  const rebuilding = holdDay === detail.date || (state?.job?.status === "proses" && state.job.day === detail.date);
+  // unggah hanya membaca berkas video, jadi pemutar tetap tampil
+  const job = state?.job;
+  const rebuilding =
+    holdDay === detail.date || (job?.status === "proses" && job.day === detail.date && job.mode !== "upload");
   if (rebuilding) {
     return (
       <div className="grid aspect-[9/16] w-full place-items-center rounded-lg bg-muted text-center text-xs text-muted-foreground sm:w-64">
@@ -239,6 +249,190 @@ function VideoBox({ detail }: { detail: RunDetail }) {
         <p className="max-w-64 text-center text-[11px] text-muted-foreground">
           Belum disalin ke folder hasil karena belum lolos pemeriksaan.
         </p>
+      )}
+    </div>
+  );
+}
+
+const PRIVACY_LABELS: Record<string, string> = { private: "Private", public: "Publik", unlisted: "Tidak publik" };
+
+/** Status unggahan YouTube, atau tombol unggah uji (private) bila videonya siap dan YouTube terhubung. */
+function YouTubeBox({ detail }: { detail: RunDetail }) {
+  const { state, settings, confirm, trackJob, refresh, reloadDetail, setSettingsOpen, setHoldDay } = useChannel();
+  const [result, setResult] = useState<YouTubeResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [sending, setSending] = useState(false);
+  // hasil "Cek status" dipakai hanya selama lebih baru dari isi run yang dimuat
+  const fresh = result && result.video_id === detail.youtube?.video_id && result.checked_at > (detail.youtube?.checked_at ?? "");
+  const yt = fresh ? result : detail.youtube;
+  const conn = state?.youtube;
+  const job = state?.job;
+  const busy = jobRunning(job);
+  // status "sedang berjalan" dari polling (isi run hanya dimuat sekali)
+  const running = state?.runs.find((r) => r.date === detail.date)?.running ?? detail.running;
+  const [rebuilding, setRebuilding] = useState(false);
+
+  async function rebuild() {
+    if (detail.upload_replan) {
+      const ok = await confirm({
+        title: "Riset & tulis naskah baru?",
+        description:
+          "Pengaturan channel berubah sejak run ini dibuat, jadi membuat ulang akan mencari topik dan menulis naskah " +
+          "baru. Video tanggal ini diganti.",
+        action: "Buat ulang",
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    setRebuilding(true);
+    setHoldDay(detail.date);        // pemutar disembunyikan: video lama akan diganti
+    try {
+      const r = await post<{ ok: boolean; job: Job }>(`${API}/run`, {
+        mode: "video",
+        date: detail.date,
+        ...(detail.run_genre ? { genre: detail.run_genre } : {}),
+      });
+      trackJob(r.job.id);
+      toast("Membuat ulang video...");
+    } catch {
+      setHoldDay(null);
+    }
+    setRebuilding(false);
+    refresh();
+  }
+  const uploadingHere = busy && job?.mode === "upload" && job.day === detail.date;
+
+  async function check() {
+    setChecking(true);
+    try {
+      const r = await post<{ ok: boolean; youtube: YouTubeResult }>(`${API}/youtube/check/${detail.date}`);
+      setResult(r.youtube);
+      toast(r.youtube.status === "siap" ? "Video siap di YouTube" : r.youtube.note || "Status diperbarui");
+      reloadDetail();
+      refresh();
+    } catch {}
+    setChecking(false);
+  }
+
+  async function upload() {
+    const opt = settings?.config.youtube;
+    const ok = await confirm({
+      title: "Unggah ke YouTube sebagai private?",
+      description:
+        `Channel: ${conn?.channel_title || "-"}. Video hanya bisa dilihat olehmu sampai kamu menayangkannya sendiri ` +
+        "di YouTube Studio. Dengan menekan Unggah, kamu menyatakan video ini mematuhi Persyaratan Layanan YouTube " +
+        "(youtube.com/t/terms) dan tidak melanggar hak cipta atau privasi orang lain. Video ditandai " +
+        `${opt?.made_for_kids ? "untuk anak-anak" : "bukan untuk anak-anak"}` +
+        `${opt?.contains_synthetic_media ? " dan berisi konten sintetis (AI)" : ""}; ubah di YouTube Studio bila perlu.`,
+      action: "Unggah",
+    });
+    if (!ok) return;
+    setSending(true);
+    try {
+      const r = await post<{ ok: boolean; job: Job }>(`${API}/youtube/upload`, { date: detail.date, confirm: true });
+      trackJob(r.job.id);
+      toast("Mengunggah ke YouTube...");
+    } catch {}
+    setSending(false);
+    refresh();
+  }
+
+  if (yt?.video_id) {
+    const tone = yt.status === "masalah" ? "bad" : yt.status === "siap" ? "ok" : "info";
+    const label =
+      yt.status === "masalah" ? "Ada masalah" : yt.status === "siap" ? "Siap di YouTube" : "Masih diproses YouTube";
+    return (
+      <div className="flex flex-col gap-2.5 rounded-xl border p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-semibold">YouTube</p>
+          {yt.test && (
+            <Badge variant="outline" className="text-muted-foreground">
+              Unggah uji
+            </Badge>
+          )}
+          <div className="flex-1" />
+          <span className={cn("flex items-center gap-1.5 text-xs", TONE_TEXT[tone])}>
+            <span className={cn("size-2 rounded-full", TONE_DOT[tone])} /> {label}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {PRIVACY_LABELS[yt.privacy] ?? yt.privacy}
+          {yt.publish_at_wib && ` · tayang otomatis ${yt.publish_at_wib}`}
+          {yt.channel_title && ` · ${yt.channel_title}`}
+        </p>
+        {yt.note && (
+          <p className={cn("text-xs break-words", yt.status === "masalah" ? "text-destructive" : "text-muted-foreground")}>
+            {yt.note}
+          </p>
+        )}
+        {yt.adopted && <p className="text-xs break-words text-warn">{yt.adopted}</p>}
+        {yt.playlist_error && <p className="text-xs break-words text-warn">Playlist: {yt.playlist_error}</p>}
+        {detail.youtube_stale && (
+          <p className="text-xs text-warn">
+            Video di YouTube dibuat dari naskah sebelumnya. Video baru tidak diunggah otomatis; ganti sendiri di YouTube
+            Studio bila perlu.
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <a href={yt.studio_url} target="_blank" rel="noreferrer" className={buttonVariants({ size: "sm" })}>
+            <ExternalLinkIcon /> YouTube Studio
+          </a>
+          <a href={yt.url} target="_blank" rel="noreferrer" className={buttonVariants({ size: "sm", variant: "outline" })}>
+            Tonton
+          </a>
+          <Button size="sm" variant="outline" onClick={check} disabled={checking || running}>
+            {checking ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Cek status
+          </Button>
+        </div>
+      </div>
+    );
+  }
+  if (!detail.upload_ready) {
+    if (!detail.upload_block || !detail.video) return null;
+    return (
+      <div className="flex flex-col gap-2 rounded-xl border border-dashed p-3">
+        <p className="flex items-start gap-2 text-xs text-muted-foreground">
+          <UploadIcon className="mt-0.5 size-3.5 flex-none" />
+          <span>Belum bisa diunggah: {detail.upload_block}</span>
+        </p>
+        {detail.upload_rebuild && (
+          <Button size="sm" variant="outline" className="w-fit" onClick={rebuild} disabled={busy || rebuilding || running}>
+            {rebuilding ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Buat ulang video
+          </Button>
+        )}
+      </div>
+    );
+  }
+  if (!conn?.connected || conn.problem) {
+    return (
+      <div className="flex flex-col gap-2 rounded-xl border border-dashed p-3">
+        <p className="text-sm font-semibold">Unggah lewat YouTube (opsional)</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {conn?.problem ||
+            "Hubungkan channel YouTube di Pengaturan untuk mengunggah dari Nero. Tanpa itu, unggah sendiri memakai paket di bawah."}
+        </p>
+        <Button size="sm" variant="outline" className="w-fit" onClick={() => setSettingsOpen(true)}>
+          {conn?.problem ? "Hubungkan ulang" : "Hubungkan YouTube"}
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border p-3">
+      <p className="text-sm font-semibold">Unggah ke YouTube</p>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Diunggah ke channel <b className="text-foreground">{conn.channel_title}</b> sebagai private (hanya kamu yang
+        bisa melihat), satu kali saja. Kamu yang menayangkannya di YouTube Studio. Pastikan videonya mematuhi{" "}
+        <a href={TOS_URL} target="_blank" rel="noreferrer" className="underline underline-offset-4">
+          Persyaratan Layanan YouTube
+        </a>
+        .
+      </p>
+      <Button size="sm" className="w-fit" onClick={upload} disabled={busy || sending || running}>
+        {uploadingHere || sending ? <Loader2Icon className="animate-spin" /> : <UploadIcon />} Unggah uji (private)
+      </Button>
+      {busy && !uploadingHere && (
+        <p className="text-[11px] text-muted-foreground">Tunggu proses yang sedang berjalan selesai.</p>
       )}
     </div>
   );

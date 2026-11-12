@@ -1,8 +1,8 @@
 /** Bentuk data dari /api/channel/* (lihat features/channel/api.py, runs.py, jobs.py, schemas.py). */
 
-export type StepId = "research" | "script" | "qc" | "seo" | "tts" | "visuals" | "render";
+export type StepId = "research" | "script" | "qc" | "seo" | "tts" | "visuals" | "render" | "publish_youtube";
 export type StepState = "antri" | "proses" | "selesai" | "dipakai" | "gagal" | "batal" | "lewat" | "belum";
-export type RunMode = "plan" | "video" | "media";
+export type RunMode = "plan" | "video" | "media" | "upload";
 export type JobStatus = "proses" | "selesai" | "gagal" | "batal";
 export type VisualType = "stock" | "ai_image" | "motion_graphic" | "plain";
 
@@ -20,6 +20,8 @@ export interface Job {
   genre: string;
   status: JobStatus;
   error: string;
+  /** selesai tetapi perlu perhatian (mis. YouTube menolak video yang diunggah) */
+  warning: string;
   code: number | null;
   /** pembatalan diminta, menunggu langkah yang sedang berjalan berhenti */
   cancelling: boolean;
@@ -51,6 +53,53 @@ export interface RunSummary {
   captions: string;
   /** sudah lolos validasi & disalin ke folder hasil */
   published: boolean;
+  /** sudah diunggah ke YouTube */
+  uploaded: { video_id: string; url: string; status: UploadStatus; verified: boolean } | null;
+}
+
+export type UploadStatus = "" | "diproses" | "siap" | "masalah";
+
+/** isi youtube.json satu run */
+export interface YouTubeResult {
+  video_id: string;
+  url: string;
+  studio_url: string;
+  privacy: string;
+  publish_at: string;
+  publish_at_wib: string;
+  verified: boolean;
+  status: UploadStatus;
+  note: string;
+  channel_title: string;
+  uploaded_at: string;
+  checked_at: string;
+  playlist_added: boolean;
+  playlist_error: string;
+  test: boolean;
+  source: string;
+  title: string;
+  channel_id: string;
+  /** video ditemukan di channel (upload sebelumnya), bukan diunggah saat itu */
+  adopted: string;
+  strict_ok: boolean;
+}
+
+/** status koneksi YouTube (tanpa token) */
+export interface YouTubeStatus {
+  configured: boolean;
+  connected: boolean;
+  /** refresh token diisi lewat environment variable */
+  from_env: boolean;
+  channel_title: string;
+  channel_id: string;
+  custom_url: string;
+  connected_at: string;
+  /** mis. izin kedaluwarsa: perlu dihubungkan ulang */
+  problem: string;
+  can_upload: boolean;
+  can_playlist: boolean;
+  flow: { status: "menunggu" | "berhasil" | "gagal" | "batal" | "kedaluwarsa"; error: string; channel: string; url: string } | null;
+  usage: { units?: number; insert?: number; search?: number };
 }
 
 export interface ReadyItem {
@@ -67,6 +116,7 @@ export interface ChannelState {
   enabled: boolean;
   niche: string;
   ready: ReadyItem[];
+  youtube: YouTubeStatus;
 }
 
 export interface Segment {
@@ -172,6 +222,19 @@ export interface RunDetail extends Omit<RunSummary, "qc" | "render"> {
   voice: { duration: number; voice: string; rate: string; source: string; warnings: string[] } | null;
   steps: JobStep[];
   log: string[];
+  youtube: YouTubeResult | null;
+  /** video di YouTube dibuat dari naskah sebelumnya (run diulang setelah diunggah) */
+  youtube_stale: boolean;
+  /** QC lulus, video & judul milik naskah sekarang, belum diunggah */
+  upload_ready: boolean;
+  /** alasan belum bisa diunggah (kosong bila siap atau tidak ada video) */
+  upload_block: string;
+  /** alasan itu bisa diperbaiki dengan membuat ulang video run ini */
+  upload_rebuild: boolean;
+  /** membuat ulang akan riset/menulis naskah baru (pengaturan channel berubah) */
+  upload_replan: boolean;
+  /** genre khusus run ini (--genre), dipakai lagi saat membuat ulang */
+  run_genre: string;
 }
 
 export interface Genre {
@@ -195,8 +258,15 @@ export interface ChannelConfig {
   tts: { engine: string; voice: string; rate: string; pause_ms: number };
   visuals: { allowed_types: Exclude<VisualType, "plain">[] };
   schedule: { timezone: string; publish_time: string };
-  approval: { mode: string };
-  youtube: { api_upload: boolean; category_id: string };
+  approval: { mode: "manual" | "review_window" | "auto" };
+  youtube: {
+    api_upload: boolean;
+    category_id: string;
+    playlist_id: string;
+    made_for_kids: boolean;
+    contains_synthetic_media: boolean;
+  };
+  research: { youtube_search_queries: string[] };
 }
 
 export interface Settings {

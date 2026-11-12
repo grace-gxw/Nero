@@ -21,7 +21,7 @@ import type { Job, RunMode, Settings } from "./types";
 
 /** Kartu "1. Uji coba": pilih genre (bila belum), jalankan, dan lihat progres per langkah. */
 export function RunCard() {
-  const { settings, state, refresh, applySettings, confirm, setHoldDay, trackJob } = useChannel();
+  const { settings, state, refresh, reloadDetail, applySettings, confirm, setHoldDay, trackJob } = useChannel();
   const [mode, setMode] = useState<RunMode>("video");
   const [fresh, setFresh] = useState(false);
   const [sending, setSending] = useState(false);
@@ -72,7 +72,7 @@ export function RunCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {!niche.trim() && settings ? (
-          <GenrePicker settings={settings} onSaved={(s) => (applySettings(s), refresh())} />
+          <GenrePicker settings={settings} onSaved={(s) => (applySettings(s), refresh(), reloadDetail())} />
         ) : (
           <p className="text-sm">
             <span className="text-muted-foreground">Genre: </span>
@@ -190,6 +190,7 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
       <div className="flex items-center gap-2 text-sm">
         {running && <Loader2Icon className="size-4 animate-spin" />}
         <span className="min-w-0 flex-1">
+          {job.mode === "upload" && <span className="text-muted-foreground">Unggah ke YouTube · </span>}
           {running && job.cancelling
             ? "Membatalkan... (menunggu langkah ini berhenti)"
             : running
@@ -202,7 +203,13 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
         </span>
         <span className="text-xs text-muted-foreground tabular-nums">{Math.round(job.progress * 100)}%</span>
         {running && (
-          <Button size="sm" variant="outline" onClick={onCancel} title="Hentikan uji coba" disabled={job.cancelling}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCancel}
+            title={job.mode === "upload" ? "Hentikan unggah (bisa dilanjutkan nanti)" : "Hentikan uji coba"}
+            disabled={job.cancelling}
+          >
             <XIcon /> Batal
           </Button>
         )}

@@ -114,9 +114,11 @@ export function ChannelProvider({ children }: { children: React.ReactNode }) {
     const prev = lastJob.current;
     lastJob.current = { id: job.id, status: job.status };
     if (!prev || prev.id !== job.id || prev.status !== "proses" || job.status === "proses") return;
-    if (job.status === "selesai") toast.success("Uji coba selesai");
-    else if (job.status === "batal") toast("Uji coba dibatalkan");
-    else toast.error(job.error || "Uji coba gagal");
+    const what = job.mode === "upload" ? "Unggah ke YouTube" : "Uji coba";
+    if (job.status === "selesai" && job.warning) toast.warning(job.warning);
+    else if (job.status === "selesai") toast.success(`${what} selesai`);
+    else if (job.status === "batal") toast(`${what} dibatalkan`);
+    else toast.error(job.error || `${what} gagal`);
     setHoldDay(null);
     setSelected(job.day);
     setDetailKick((k) => k + 1);
