@@ -1,6 +1,6 @@
 import type { Option } from "@/components/fields";
 
-import type { RunMode, StepState, VisualType } from "./types";
+import type { RunMode, StepState, VisualType, WeekDay } from "./types";
 
 export const MODES: { id: RunMode; label: string; hint: string }[] = [
   { id: "video", label: "Video lengkap", hint: "Riset sampai render. ±3–6 menit." },
@@ -60,6 +60,16 @@ export const FORMAT_LABELS: Record<string, string> = {
   question: "Pertanyaan",
   explainer: "Penjelasan",
 };
+
+export const WEEKDAYS: Option<WeekDay>[] = [
+  ["monday", "Senin"],
+  ["tuesday", "Selasa"],
+  ["wednesday", "Rabu"],
+  ["thursday", "Kamis"],
+  ["friday", "Jumat"],
+  ["saturday", "Sabtu"],
+  ["sunday", "Minggu"],
+];
 
 /** Halaman pembuatan key (dibuka di browser). */
 export const KEY_PAGES: Record<string, string> = {

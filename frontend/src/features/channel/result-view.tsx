@@ -37,7 +37,7 @@ import {
   toSummary,
 } from "./api";
 import { FORMAT_LABELS, ISSUE_LABELS, STEP_DOT, STEP_STATE_LABELS, VISUAL_LABELS } from "./options";
-import { useChannel } from "./store";
+import { GLOBAL_MODES, useChannel } from "./store";
 import type { Captions, Job, RunDetail, RunSummary, SegmentVisual, YouTubeResult } from "./types";
 
 const TOS_URL = "https://www.youtube.com/t/terms";
@@ -198,11 +198,13 @@ const CATEGORY_NAMES: Record<string, string> = {
 
 function VideoBox({ detail }: { detail: RunDetail }) {
   const { state, holdDay } = useChannel();
-  // unggah hanya membaca berkas video, jadi pemutar tetap tampil
+  // unggah & kirim hanya membaca berkas video; analisis & laporan tidak menyentuh run: pemutar tetap tampil
   const job = state?.job;
   const rebuilding =
     holdDay === detail.date ||
-    (job?.status === "proses" && job.day === detail.date && job.mode !== "upload" && job.mode !== "notify");
+    (job?.status === "proses" &&
+      job.day === detail.date &&
+      !["upload", "notify", ...GLOBAL_MODES].includes(job.mode));
   if (rebuilding) {
     return (
       <div className="grid aspect-[9/16] w-full place-items-center rounded-lg bg-muted text-center text-xs text-muted-foreground sm:w-64">

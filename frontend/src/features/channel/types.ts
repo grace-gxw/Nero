@@ -10,9 +10,12 @@ export type StepId =
   | "render"
   | "publish_youtube"
   | "manual_pack"
-  | "notify";
+  | "notify"
+  | "analyst"
+  | "state_update"
+  | "weekly_report";
 export type StepState = "antri" | "proses" | "selesai" | "dipakai" | "gagal" | "batal" | "lewat" | "belum";
-export type RunMode = "plan" | "video" | "media" | "upload" | "notify";
+export type RunMode = "plan" | "video" | "media" | "upload" | "notify" | "analyst" | "report";
 export type JobStatus = "proses" | "selesai" | "gagal" | "batal";
 export type VisualType = "stock" | "ai_image" | "motion_graphic" | "plain";
 
@@ -108,6 +111,8 @@ export interface YouTubeStatus {
   problem: string;
   can_upload: boolean;
   can_playlist: boolean;
+  /** izin YouTube Analytics (yt-analytics.readonly) diberikan */
+  can_analytics: boolean;
   flow: { status: "menunggu" | "berhasil" | "gagal" | "batal" | "kedaluwarsa"; error: string; channel: string; url: string } | null;
   usage: { units?: number; insert?: number; search?: number };
 }
@@ -282,8 +287,11 @@ export interface ChannelConfig {
     contains_synthetic_media: boolean;
   };
   research: { youtube_search_queries: string[] };
-  notify: { telegram: boolean };
+  notify: { telegram: boolean; weekly_report_day: WeekDay };
+  analyst: { share_with_ai: boolean };
 }
+
+export type WeekDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 
 export interface Settings {
   config: ChannelConfig;
@@ -307,4 +315,92 @@ export interface Captions {
   tiktok_ai_label: boolean;
   /** nyalakan "Add AI label" di Instagram */
   instagram_ai_label: boolean;
+}
+
+/** angka YouTube Analytics satu video untuk 7 hari pertama (null = tidak ada data, bukan 0) */
+export interface VideoNumbers {
+  engaged_views: number | null;
+  views: number | null;
+  minutes_watched: number | null;
+  avg_view_duration: number | null;
+  avg_view_pct: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+}
+
+export type VideoPerfStatus = "lengkap" | "sementara" | "belum_ada_data" | "belum_tayang" | "";
+
+/** satu video Nero di channel (features/channel/schemas.py VideoPerf) */
+export interface VideoPerf {
+  video_id: string;
+  day: string;
+  source: "api" | "manual";
+  title: string;
+  topic: string;
+  format: string;
+  hook: string;
+  duration: number;
+  published_at: string;
+  privacy: string;
+  public_views: number | null;
+  public_likes: number | null;
+  public_comments: number | null;
+  window_start: string;
+  window_end: string;
+  complete: boolean;
+  first_week: VideoNumbers | null;
+  status: VideoPerfStatus;
+  note: string;
+}
+
+export interface ChannelWeek {
+  start: string;
+  end: string;
+  days: number;
+  engaged_views: number | null;
+  views: number | null;
+  minutes_watched: number | null;
+  subscribers_gained: number | null;
+  subscribers_lost: number | null;
+}
+
+export type LearningsState = "siap" | "data_belum_cukup" | "izin_ai" | "gagal" | "belum_terhubung" | "";
+
+export interface Performance {
+  day: string;
+  updated_at: string;
+  auth_verified_at: string;
+  channel_id: string;
+  data_through: string;
+  analytics: boolean;
+  notes: string[];
+  videos: VideoPerf[];
+  this_week: ChannelWeek | null;
+  prev_week: ChannelWeek | null;
+  mature: number;
+  learnings: { kind: "berhasil" | "kurang" | "saran"; text: string; video_ids: string[] }[];
+  learnings_state: LearningsState;
+  learnings_at: string;
+}
+
+/** GET /api/channel/analytics */
+export interface AnalyticsData {
+  performance: Performance | null;
+  /** isi learnings.md */
+  learnings: string;
+  /** ID video teratas/terbawah (engaged views 7 hari pertama) */
+  top: string[];
+  bottom: string[];
+  weekly: { day: WeekDay; key: string; last_key: string; sent_at: string; due: boolean };
+  share_with_ai: boolean;
+  connected: boolean;
+  can_analytics: boolean;
+  /** refresh token dari environment variable (izin tidak tercatat, tombol Hubungkan nonaktif) */
+  from_env: boolean;
+  running: boolean;
+  /** minggu ini & minggu lalu sama-sama 7 hari berdata (persen naik/turun bermakna) */
+  comparable: boolean;
+  min_videos: number;
+  window_days: number;
 }

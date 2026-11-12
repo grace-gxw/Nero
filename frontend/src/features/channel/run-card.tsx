@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 
 import { API, dateLabel, jobRunning } from "./api";
 import { MODES, STEP_DOT, STEP_STATE_LABELS } from "./options";
-import { useChannel } from "./store";
+import { MODE_NAMES, useChannel } from "./store";
 import type { Job, RunMode, Settings } from "./types";
 
 /** Kartu "1. Uji coba": pilih genre (bila belum), jalankan, dan lihat progres per langkah. */
@@ -190,8 +190,7 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
       <div className="flex items-center gap-2 text-sm">
         {running && <Loader2Icon className="size-4 animate-spin" />}
         <span className="min-w-0 flex-1">
-          {job.mode === "upload" && <span className="text-muted-foreground">Unggah ke YouTube · </span>}
-          {job.mode === "notify" && <span className="text-muted-foreground">Kirim ke Telegram · </span>}
+          {MODE_NAMES[job.mode] && <span className="text-muted-foreground">{MODE_NAMES[job.mode]} · </span>}
           {running && job.cancelling
             ? "Membatalkan... (menunggu langkah ini berhenti)"
             : running
@@ -211,9 +210,11 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
             title={
               job.mode === "upload"
                 ? "Hentikan unggah (bisa dilanjutkan nanti)"
-                : job.mode === "notify"
+                : job.mode === "notify" || job.mode === "report"
                   ? "Hentikan kiriman ke Telegram"
-                  : "Hentikan uji coba"
+                  : job.mode === "analyst"
+                    ? "Hentikan analisis"
+                    : "Hentikan uji coba"
             }
             disabled={job.cancelling}
           >

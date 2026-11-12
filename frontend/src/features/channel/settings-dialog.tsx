@@ -21,9 +21,9 @@ import { Label } from "@/components/ui/label";
 import { post } from "@/lib/api";
 
 import { API } from "./api";
-import { KEY_PAGES, RATES, VISUAL_LABELS } from "./options";
+import { KEY_PAGES, RATES, VISUAL_LABELS, WEEKDAYS } from "./options";
 import { useChannel } from "./store";
-import type { ChannelConfig, Settings, YouTubeStatus } from "./types";
+import type { ChannelConfig, Settings, WeekDay, YouTubeStatus } from "./types";
 
 const CUSTOM = "kustom";
 type AllowedVisual = ChannelConfig["visuals"]["allowed_types"][number];
@@ -87,7 +87,7 @@ export function ChannelSettingsDialog() {
 }
 
 function SettingsForm({ settings }: { settings: Settings }) {
-  const { setSettingsOpen, applySettings, refresh, reloadDetail, confirm } = useChannel();
+  const { setSettingsOpen, applySettings, refresh, reloadDetail, reloadAnalytics, confirm } = useChannel();
   const nero = useNero();
   const c = settings.config;
   const current = settings.genres.find((g) => g.niche === c.channel.niche);
@@ -110,6 +110,8 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const [kids, setKids] = useState(c.youtube.made_for_kids);
   const [ytQueries, setYtQueries] = useState(c.research.youtube_search_queries.join(", "));
   const [notifyTg, setNotifyTg] = useState(c.notify.telegram);
+  const [weeklyDay, setWeeklyDay] = useState<WeekDay>(c.notify.weekly_report_day);
+  const [shareAi, setShareAi] = useState(c.analyst.share_with_ai);
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
@@ -150,7 +152,8 @@ function SettingsForm({ settings }: { settings: Settings }) {
           approval: { mode: approval },
           youtube: { api_upload: apiUpload, playlist_id: playlist.trim(), made_for_kids: kids },
           research: { youtube_search_queries: queries },
-          notify: { telegram: notifyTg },
+          notify: { telegram: notifyTg, weekly_report_day: weeklyDay },
+          analyst: { share_with_ai: shareAi },
         },
         keys: filled,
       });
@@ -158,6 +161,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
       setSettingsOpen(false);
       refresh();
       reloadDetail();          // kesiapan unggah bergantung pada pengaturan
+      reloadAnalytics();
       toast.success("Pengaturan disimpan");
     } catch {}
     setSaving(false);
@@ -386,8 +390,34 @@ function SettingsForm({ settings }: { settings: Settings }) {
         />
         <Label className="cursor-pointer font-normal">
           <Checkbox checked={notifyTg} onCheckedChange={(v) => setNotifyTg(v === true)} />
-          Kirim paket harian & peringatan gagal ke Telegram (saat Channel Otomatis aktif)
+          Kirim paket harian, laporan mingguan, & peringatan gagal ke Telegram (saat Channel Otomatis aktif)
         </Label>
+      </section>
+
+      <section className="flex flex-col gap-3">
+        <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">Analitik</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Nero membaca performa video buatannya di channel yang terhubung (YouTube Data API &amp; YouTube Analytics
+          API; aktifkan keduanya di Google Cloud). Angkanya disimpan di komputer ini, diperbarui tiap analisis, dan
+          dihapus bila YouTube diputuskan.
+        </p>
+        <div className="flex flex-col gap-1.5 sm:max-w-60">
+          <Label htmlFor="ch_weekly">Hari laporan mingguan</Label>
+          <SimpleSelect id="ch_weekly" value={weeklyDay} onChange={setWeeklyDay} options={WEEKDAYS} />
+        </div>
+        <Label className="cursor-pointer items-start font-normal">
+          <Checkbox className="mt-0.5" checked={shareAi} onCheckedChange={(v) => setShareAi(v === true)} />
+          <span>
+            Izinkan statistik video dikirim ke penyedia AI (urutan di pengaturan AI: Gemini, Groq, atau AI lokal) untuk
+            menyusun pelajaran performa
+          </span>
+        </Label>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Yang dikirim: nomor urut, judul/topik/format/hook buatan Nero, dan angka YouTube 7 hari pertama per video,
+          tanpa ID video atau channel. Paket gratis Gemini memakai isi prompt untuk mengembangkan produk Google dan
+          bisa dibaca peninjau manusia. Mati = performa tetap tampil di halaman dan laporan mingguan, tanpa pelajaran
+          otomatis.
+        </p>
       </section>
 
       <section className="flex flex-col gap-2">
@@ -397,8 +427,8 @@ function SettingsForm({ settings }: { settings: Settings }) {
           Aktifkan Channel Otomatis
         </Label>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          Jadwal harian dan kiriman Telegram belum tersedia, jadi sakelar ini belum menjalankan apa pun. Uji coba dan
-          unggah uji dari halaman ini selalu bisa dipakai.
+          Jadwal harian belum tersedia, jadi sakelar ini belum menjalankan apa pun. Uji coba, unggah uji, kirim ke
+          Telegram, dan analisis dari halaman ini selalu bisa dipakai.
         </p>
       </section>
 
@@ -490,7 +520,7 @@ async function readYouTube(): Promise<YouTubeStatus | null> {
 /** Status koneksi + tombol Hubungkan / Putuskan. Menghubungkan membuka halaman Google di tab baru; Nero menunggu
  *  jawabannya di alamat 127.0.0.1 sementara. */
 function YouTubeConnect({ unsaved }: { unsaved: boolean }) {
-  const { state, refresh, reloadDetail, confirm } = useChannel();
+  const { state, refresh, reloadDetail, reloadAnalytics, confirm } = useChannel();
   const [own, setOwn] = useState<YouTubeStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const yt = own ?? state?.youtube ?? null;
@@ -513,9 +543,10 @@ function YouTubeConnect({ unsaved }: { unsaved: boolean }) {
       else if (now !== "batal") toast.error(flow?.error || "YouTube belum terhubung");
       refresh();
       reloadDetail();
+      reloadAnalytics();
     }
     prevFlow.current = now;
-  }, [flow?.status, flow?.channel, flow?.error, refresh, reloadDetail]);
+  }, [flow?.status, flow?.channel, flow?.error, refresh, reloadDetail, reloadAnalytics]);
 
   async function connect() {
     if (unsaved) {
@@ -542,7 +573,8 @@ function YouTubeConnect({ unsaved }: { unsaved: boolean }) {
     const ok = await confirm({
       title: "Putuskan YouTube?",
       description:
-        "Izin Nero di akun Google dicabut dan token dihapus dari komputer ini. Video yang sudah diunggah tidak berubah.",
+        "Izin Nero di akun Google dicabut dan token dihapus dari komputer ini. Data performa yang disimpan Nero " +
+        "(angka & pelajaran) ikut dihapus. Video yang sudah diunggah tidak berubah.",
       action: "Putuskan",
       destructive: true,
     });
@@ -553,6 +585,7 @@ function YouTubeConnect({ unsaved }: { unsaved: boolean }) {
       toast(r.revoked ? "YouTube diputuskan" : "Token dihapus. Cek juga myaccount.google.com/permissions.");
       refresh();
       reloadDetail();
+      reloadAnalytics();
     } catch {}
   }
 

@@ -4,6 +4,7 @@ import { RotateCwIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
+import { AnalyticsSection } from "./analytics-card";
 import { ChannelHeader } from "./channel-header";
 import { ReadyCard } from "./ready-card";
 import { ResultSection } from "./result-view";
@@ -46,6 +47,7 @@ function Main() {
         <ReadyCard />
       </div>
       <ResultSection />
+      <AnalyticsSection />
     </main>
   );
 }

@@ -16,7 +16,7 @@ import {
 import { api } from "@/lib/api";
 
 import { API, jobRunning } from "./api";
-import type { ChannelState, Settings } from "./types";
+import type { ChannelState, Job, Settings } from "./types";
 
 type ConfirmOptions = { title: string; description?: string; action?: string; destructive?: boolean };
 
@@ -32,6 +32,9 @@ interface Store {
   /** naik setiap kali isi run perlu dimuat ulang (mis. run baru selesai) */
   detailKick: number;
   reloadDetail: () => void;
+  /** naik setiap kali kartu Analitik perlu dimuat ulang (analisis/laporan selesai, pengaturan disimpan) */
+  analyticsKick: number;
+  reloadAnalytics: () => void;
   settingsOpen: boolean;
   setSettingsOpen: (open: boolean) => void;
   confirm: (opt: ConfirmOptions) => Promise<boolean>;
@@ -46,6 +49,17 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null);
 
+/** pekerjaan yang tidak terikat satu run (analisis performa, laporan mingguan) */
+export const GLOBAL_MODES: Job["mode"][] = ["analyst", "report"];
+
+/** nama pekerjaan untuk pemberitahuan selesai/gagal */
+export const MODE_NAMES: Partial<Record<Job["mode"], string>> = {
+  upload: "Unggah ke YouTube",
+  notify: "Kirim ke Telegram",
+  analyst: "Analisis performa",
+  report: "Laporan mingguan",
+};
+
 export function useChannel(): Store {
   const s = useContext(Ctx);
   if (!s) throw new Error("useChannel harus dipakai di dalam ChannelProvider");
@@ -58,6 +72,7 @@ export function ChannelProvider({ children }: { children: React.ReactNode }) {
   const [kick, setKick] = useState(0);
   const [picked, setSelected] = useState<string | null>(null);
   const [detailKick, setDetailKick] = useState(0);
+  const [analyticsKick, setAnalyticsKick] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmOptions | null>(null);
   const confirmResolve = useRef<((ok: boolean) => void) | null>(null);
@@ -114,14 +129,16 @@ export function ChannelProvider({ children }: { children: React.ReactNode }) {
     const prev = lastJob.current;
     lastJob.current = { id: job.id, status: job.status };
     if (!prev || prev.id !== job.id || prev.status !== "proses" || job.status === "proses") return;
-    const what =
-      job.mode === "upload" ? "Unggah ke YouTube" : job.mode === "notify" ? "Kirim ke Telegram" : "Uji coba";
+    const what = MODE_NAMES[job.mode] ?? "Uji coba";
     if (job.status === "selesai" && job.warning) toast.warning(job.warning);
     else if (job.status === "selesai") toast.success(`${what} selesai`);
     else if (job.status === "batal") toast(`${what} dibatalkan`);
     else toast.error(job.error || `${what} gagal`);
     setHoldDay(null);
-    setSelected(job.day);
+    setAnalyticsKick((k) => k + 1);
+    // analisis & laporan mingguan tidak terikat satu run: pilihan di bagian Hasil tidak berubah
+    const perRun = !GLOBAL_MODES.includes(job.mode);
+    setSelected((cur) => (perRun ? job.day : cur));
     setDetailKick((k) => k + 1);
   }, [state?.job]);
 
@@ -134,6 +151,7 @@ export function ChannelProvider({ children }: { children: React.ReactNode }) {
 
   const refresh = useCallback(() => setKick((k) => k + 1), []);
   const reloadDetail = useCallback(() => setDetailKick((k) => k + 1), []);
+  const reloadAnalytics = useCallback(() => setAnalyticsKick((k) => k + 1), []);
 
   const confirm = useCallback((opt: ConfirmOptions) => {
     setConfirmState(opt);
@@ -159,6 +177,8 @@ export function ChannelProvider({ children }: { children: React.ReactNode }) {
         setSelected,
         detailKick,
         reloadDetail,
+        analyticsKick,
+        reloadAnalytics,
         settingsOpen,
         setSettingsOpen,
         confirm,
