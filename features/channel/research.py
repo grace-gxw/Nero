@@ -222,9 +222,11 @@ def run(cfg: ChannelConfig, today: date, *, settings: dict | None = None, learni
         avoid_topics: list[str] = (), log=print) -> Research:
     """avoid_topics: topik yang juga harus dihindari (mis. topik hari ini sebelum riset diulang)."""
     recent = [*state.recent_topics(HISTORY_DAYS, today), *[t for t in avoid_topics if t]]
+    from . import youtube  # sinyal minat dari YouTube (opsional, hanya bila kata kunci diisi & YouTube terhubung)
+    trends = youtube.trending_titles(cfg, settings=settings, log=log)
     common_vars = {"niche": cfg.channel.niche, "audience": cfg.channel.audience, "tone": cfg.channel.tone,
                    "recent_topics": recent, "learnings": learnings, "banned_topics": cfg.channel.banned_topics,
-                   "today": today.isoformat(), "evergreen": cfg.research.evergreen_mode}
+                   "today": today.isoformat(), "evergreen": cfg.research.evergreen_mode, "trends": trends}
     ask = {"cfg": cfg, "settings": settings, "log": log}
 
     materials: list[Source] = []

@@ -1034,7 +1034,7 @@ class PipelineMedia(ChannelSandbox):
             self.assertTrue(os.path.isfile(self.rd(name)), name)
         self.assertTrue(self.load("render", RenderInfo).valid)
         self.assertIn("analyst belum tersedia", out)
-        self.assertIn("publish_youtube belum tersedia", out)
+        self.assertIn("youtube: uji coba, video tidak diunggah", out)   # dry-run tidak pernah mengunggah
         copied = os.path.join(self.tmp, "output", "channel", DAY.isoformat(), "final.mp4")
         self.assertTrue(os.path.isfile(copied))
         # deskripsi disusun ulang dari visual sebenarnya: rencana memakai stok & AI, hasilnya grafik semua

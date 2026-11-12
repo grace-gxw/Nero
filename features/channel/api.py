@@ -8,9 +8,15 @@ Nero · Channel Otomatis - rute /api/channel/* (didaftarkan app.py).
   POST /run/cancel              batalkan run yang sedang berjalan
   GET  /runs/<tanggal>          isi satu run: riset, skrip, QC, metadata, visual, render, log
   GET  /runs/<tanggal>/file/<n> berkas run (final.mp4, final.jpg, voice.mp3, captions.srt)
+  GET  /youtube                 status koneksi YouTube (tanpa token) + pemakaian kuota hari ini
+  POST /youtube/connect         mulai "Hubungkan YouTube" -> {url} untuk dibuka di browser
+  POST /youtube/connect/cancel  batalkan proses menghubungkan
+  POST /youtube/disconnect      cabut izin & hapus token
+  POST /youtube/upload          {date, confirm: true} -> unggah uji (private) sebagai pekerjaan latar
+  POST /youtube/check/<tanggal> cek ulang status video yang sudah diunggah
 
 Selama settings.channel.enabled = false, fitur ini tidak menjalankan apa pun di latar belakang; halaman hanya
-menjalankan uji coba atas permintaan pengguna.
+menjalankan uji coba dan unggah uji (private) atas permintaan pengguna.
 """
 from __future__ import annotations
 
@@ -22,8 +28,12 @@ from flask import Blueprint, jsonify, request, send_file
 
 import common
 
-from . import config, genres, jobs, runs, state, timeutil
+from . import config, genres, jobs, runs, state, timeutil, youtube
 from .config import ID, SETTINGS, ConfigError
+from .runctx import RunLocked
+
+# refresh token hanya diisi lewat "Hubungkan YouTube" dan dihapus lewat "Putuskan" (izinnya ikut dicabut)
+OAUTH_ONLY_KEYS = ("yt_refresh_token",)
 
 bp = Blueprint(ID, __name__)
 
@@ -70,7 +80,9 @@ def post_settings():
             config.save_config(patch)            # divalidasi utuh dulu; gagal = tidak ada yang tersimpan
         keys, clear = body.get("keys"), body.get("clear_keys")
         if isinstance(keys, dict) or isinstance(clear, list):
-            config.save_keys(keys if isinstance(keys, dict) else {}, clear if isinstance(clear, list) else [])
+            keys = {k: v for k, v in (keys if isinstance(keys, dict) else {}).items() if k not in OAUTH_ONLY_KEYS}
+            clear = [k for k in (clear if isinstance(clear, list) else []) if k not in OAUTH_ONLY_KEYS]
+            config.save_keys(keys, clear)
     except ConfigError as e:
         return jsonify(error=str(e)), 400
     return jsonify(ok=True, **_public())
@@ -90,7 +102,16 @@ def _readiness(cfg: config.ChannelConfig, keys: dict[str, bool]) -> list[dict]:
          "ok": keys.get("cloudflare_account_id", False) and keys.get("cloudflare_token", False), "required": False},
         {"id": "music", "label": "Folder musik bebas royalti", "ok": bool(music) and os.path.isdir(music),
          "required": False},
+        _youtube_ready(),
     ]
+
+
+def _youtube_ready() -> dict:
+    st = youtube.status()
+    if st["connected"] and st["problem"]:
+        return {"id": "youtube", "label": "YouTube perlu dihubungkan ulang", "ok": False, "required": False}
+    return {"id": "youtube", "label": "YouTube terhubung (unggah lewat API)",
+            "ok": st["connected"] and st["configured"], "required": False}
 
 
 @bp.get("/state")
@@ -104,7 +125,8 @@ def get_state():
     except ConfigError as e:
         return jsonify(error=str(e)), 500
     return jsonify(job=job.snapshot() if job else None, runs=runs.list_runs(20),
-                   today=timeutil.today_local(tz).isoformat(), enabled=enabled, niche=niche, ready=ready)
+                   today=timeutil.today_local(tz).isoformat(), enabled=enabled, niche=niche, ready=ready,
+                   youtube=youtube.status())
 
 
 @bp.post("/run")
@@ -114,6 +136,8 @@ def post_run():
     from . import pipeline
     body = request.get_json(force=True, silent=True) or {}
     mode = str(body.get("mode") or "video")
+    if mode == "upload":
+        return jsonify(error="Unggah ke YouTube memakai tombol \"Unggah uji\" di hasil run."), 400
     genre = str(body.get("genre") or "") or None
     force = body.get("force") or []
     if not isinstance(force, list):
@@ -162,6 +186,106 @@ def get_run_file(day, name):
     if path is None:
         return jsonify(error="Berkas tidak ditemukan."), 404
     return send_file(path, conditional=True, as_attachment=request.args.get("dl") == "1", download_name=name)
+
+
+# --------------------------------------------------------------------------
+# YouTube
+# --------------------------------------------------------------------------
+@bp.get("/youtube")
+def get_youtube():
+    try:
+        cfg = config.load_config()
+    except ConfigError as e:
+        return jsonify(error=str(e)), 500
+    return jsonify(**youtube.status(), api_upload=cfg.youtube.api_upload)
+
+
+def _uploading() -> bool:
+    """Ada unggahan berjalan: pekerjaan halaman ini, atau proses lain (CLI) yang memegang kunci upload."""
+    job = jobs.current()
+    return (job is not None and job.running() and job.mode == "upload") or youtube.upload_active()
+
+
+UPLOAD_BUSY = youtube.UPLOAD_BUSY
+
+
+@bp.post("/youtube/connect")
+def post_youtube_connect():
+    """Mulai menghubungkan: listener sementara di 127.0.0.1 menunggu Google mengalihkan browser kembali."""
+    if _uploading():
+        return jsonify(error=UPLOAD_BUSY), 409
+    try:
+        flow = youtube.begin_connect(config.load_config())
+    except (ConfigError, youtube.YouTubeError) as e:
+        return jsonify(error=str(e)), 400
+    except OSError as e:
+        return jsonify(error=f"Port lokal untuk menerima jawaban Google tidak bisa dibuka ({e.strerror})."), 500
+    return jsonify(ok=True, url=flow.url, youtube=youtube.status())
+
+
+@bp.post("/youtube/connect/cancel")
+def post_youtube_connect_cancel():
+    flow = youtube.current_flow()
+    if flow is not None:
+        flow.cancel()
+    return jsonify(ok=True, youtube=youtube.status())
+
+
+@bp.post("/youtube/disconnect")
+def post_youtube_disconnect():
+    if config.key_from_env("yt_refresh_token"):
+        return jsonify(error="Token YouTube diatur lewat environment variable YT_REFRESH_TOKEN; hapus env var itu."), 400
+    if _uploading():
+        return jsonify(error=UPLOAD_BUSY), 409
+    try:
+        revoked = youtube.disconnect()
+    except youtube.YouTubeError as e:
+        return jsonify(error=str(e)), 409
+    return jsonify(ok=True, revoked=revoked, youtube=youtube.status())
+
+
+@bp.post("/youtube/upload")
+def post_youtube_upload():
+    """Unggah uji video satu run sebagai private. Body: {date: YYYY-MM-DD, confirm: true}. `confirm` = pengguna
+    sudah menyatakan videonya mematuhi Persyaratan Layanan YouTube (ToS API YouTube 9.1)."""
+    body = request.get_json(force=True, silent=True) or {}
+    if body.get("confirm") is not True:
+        return jsonify(error="Setujui pernyataan Persyaratan Layanan YouTube dulu."), 400
+    text = str(body.get("date") or "")
+    day = runs.parse_day(text) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else None
+    if day is None:
+        return jsonify(error="Tanggal harus berbentuk YYYY-MM-DD."), 400
+    if not youtube.connected():
+        return jsonify(error="YouTube belum dihubungkan. Hubungkan dulu di Pengaturan."), 400
+    flow = youtube.current_flow()
+    if flow is not None and not flow.done.is_set():
+        return jsonify(error="Proses Hubungkan YouTube masih berjalan. Selesaikan atau batalkan dulu."), 409
+    if youtube.upload_active():
+        return jsonify(error=UPLOAD_BUSY), 409
+    try:
+        job = jobs.start(day, "upload")
+    except jobs.JobBusy as e:
+        return jsonify(error=str(e)), 409
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, job=job.snapshot())
+
+
+@bp.post("/youtube/check/<day>")
+def post_youtube_check(day):
+    from . import pipeline
+    d = runs.parse_day(day)
+    if d is None:
+        return jsonify(error="Tanggal tidak valid."), 400
+    try:
+        res = pipeline.recheck_upload(d)
+    except RunLocked:
+        return jsonify(error="Run tanggal ini sedang berjalan. Coba lagi setelah selesai."), 409
+    except (ConfigError, youtube.YouTubeError) as e:
+        return jsonify(error=str(e)), 400
+    if res is None:
+        return jsonify(error="Video tanggal ini belum diunggah."), 404
+    return jsonify(ok=True, youtube=res.model_dump(mode="json"))
 
 
 def start():

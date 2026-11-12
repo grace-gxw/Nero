@@ -171,6 +171,7 @@ class TTSCfg(_Section):
 
 class ResearchCfg(_Section):
     rss_feeds: list[str] = Field(default_factory=list)
+    # kata kunci pencarian YouTube (maks. 3 per hari) untuk melihat tema yang sedang diminati; kosong = tidak dipakai
     youtube_search_queries: list[str] = Field(default_factory=list, max_length=3)
     evergreen_mode: bool = False
     lookback_hours: int = Field(72, ge=6, le=24 * 14)
@@ -178,8 +179,10 @@ class ResearchCfg(_Section):
 
 
 class YouTubeCfg(_Section):
-    # Upload lewat API baru dinyalakan setelah project Google Cloud lolos audit YouTube API. Sebelum itu
-    # YouTube mengunci video sebagai private, jadi Nero hanya menyiapkan paket unggah manual.
+    # false = run harian tidak mengunggah; video diunggah sendiri memakai paket di halaman (keputusan pengguna
+    # 11 Nov 2026, saat YouTube masih mengunci video dari project Google Cloud yang belum diaudit). Kunci itu dicabut
+    # YouTube pada 2 Nov 2026 (revision history Data API), jadi menyalakannya tinggal keputusan pengguna setelah
+    # unggah uji berhasil. Unggah uji (private, atas perintah pengguna) tidak bergantung pada nilai ini.
     api_upload: bool = False
     category_id: str = "27"          # 27 Education, 28 Science & Technology, 24 Entertainment
     default_tags: list[str] = Field(default_factory=list)

@@ -112,10 +112,35 @@ def save_history(entries: list[HistoryEntry]) -> None:
                           [e.model_dump(mode="json") for e in sorted(entries, key=lambda e: e.date)])
 
 
+def _load_history_strict() -> list[HistoryEntry]:
+    """Seperti load_history, tetapi berkas yang ada namun tidak terbaca membuat galat (bukan daftar kosong), supaya
+    menulis ulang riwayat tidak menghapus isinya. Berkas yang sedang dibuka proses lain dicoba ulang sebentar."""
+    import time
+    path = data_path("history.json")
+    end = time.monotonic() + 3.0
+    while True:
+        try:
+            raw = json.loads(read_text(path))
+            break
+        except FileNotFoundError:
+            return []
+        except PermissionError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(RETRY_DELAY)
+    if not isinstance(raw, list):
+        raise ValueError("history.json bukan daftar")  # noqa: TRY004  isi rusak, ditangkap seperti JSON rusak
+    out = []
+    for item in raw:
+        with contextlib.suppress(ValidationError):
+            out.append(HistoryEntry.model_validate(item))
+    return out
+
+
 def upsert_history(entry: HistoryEntry) -> None:
     """Satu entri per tanggal: menjalankan ulang langkah state_update tidak menambah entri ganda."""
     with _lock:
-        entries = [e for e in load_history() if e.date != entry.date]
+        entries = [e for e in _load_history_strict() if e.date != entry.date]
         save_history(entries + [entry])
 
 
@@ -172,6 +197,7 @@ def save_learnings(text: str) -> None:
 KEEP_RUN_DAYS = 7          # klip antara, gambar AI, dan suara mentah run yang lebih tua dari ini dihapus
 KEEP_STOCK_DAYS = 2        # klip stok yang diunduh (klip yang dipakai tidak boleh dipakai lagi 30 hari)
 KEEP_SEARCH_HOURS = 24     # cache hasil pencarian Pexels/Pixabay (aturan Pixabay: cache 24 jam)
+KEEP_TRENDS_HOURS = 48     # judul populer YouTube untuk riset
 _HEAVY_DIRS = ("clips", "images", "tts")
 _HEAVY_FILES = ("voice.wav", "base.mkv")
 
@@ -194,11 +220,16 @@ def prune_runs(today: date, now: float | None = None, keep: tuple[str, ...] = ()
     `today` = tanggal hari ini yang sebenarnya; folder di `keep` dan run yang sedang berjalan (.lock) tidak
     disentuh. Hasil: jumlah berkas yang dihapus."""
     import time
-    root = data_path("runs")
-    if not os.path.isdir(root):
-        return 0
     now = time.time() if now is None else now
     removed = 0
+    # judul hasil pencarian YouTube (data API): hanya untuk hari itu; Developer Policies membatasi simpan 30 hari
+    trends = data_path("usage", "youtube_trends.json")
+    with contextlib.suppress(OSError):
+        if now - os.path.getmtime(trends) > KEEP_TRENDS_HOURS * 3600:
+            removed += _remove(trends)
+    root = data_path("runs")
+    if not os.path.isdir(root):
+        return removed
     for name in os.listdir(root):
         if name.startswith("."):
             continue

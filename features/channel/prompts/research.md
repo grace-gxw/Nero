@@ -30,6 +30,12 @@ Tugas: buat {{ n }} kandidat topik video dari bahan di atas.
 {% if recent_topics %}{% for t in recent_topics %}  - {{ t }}
 {% endfor %}{% else %}  (belum ada)
 {% endif %}
+{% if trends %}
+
+Judul video pendek YouTube yang sedang banyak ditonton (hanya petunjuk minat penonton, BUKAN sumber fakta;
+jangan menyalin judul, isi, atau gaya video orang lain):
+{% for t in trends %}  - {{ t }}
+{% endfor %}{% endif %}
 {% if learnings %}
 
 Pelajaran dari performa video sebelumnya:

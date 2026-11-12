@@ -285,10 +285,23 @@ class YouTubeResult(_Model):
     video_id: str = ""
     url: str = ""
     studio_url: str = ""
-    privacy: str = ""
+    privacy: str = ""                # privasi yang diminta saat upload
+    publish_at: str = ""             # jadwal tayang UTC (RFC 3339) bila dijadwalkan
     publish_at_wib: str = ""
     verified: bool = False
+    status: str = ""                 # hasil cek terakhir: diproses | siap | masalah
     note: str = ""
+    channel_title: str = ""
+    uploaded_at: str = ""
+    checked_at: str = ""
+    playlist_added: bool = False
+    playlist_error: str = ""
+    test: bool = False               # diunggah lewat tombol "Unggah uji" (selalu private)
+    source: str = ""                 # sidik naskah video yang diunggah (halaman: naskah sudah berganti?)
+    title: str = ""                  # judul video di YouTube
+    channel_id: str = ""             # channel tujuan (cek ulang hanya dari channel yang sama)
+    adopted: str = ""                # video ditemukan (upload sebelumnya), bukan diunggah saat itu: keterangannya
+    strict_ok: bool = False          # pernah lolos cek ketat (privasi & jadwal sesuai permintaan)
 
 
 class HistoryEntry(_Model):

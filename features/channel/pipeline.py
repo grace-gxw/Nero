@@ -15,7 +15,8 @@ Checkpoint (lihat juga runctx.py):
   diulang (runctx.DEPENDS). Langkah media (suara, visual, render) diulang bila sidik masukannya berubah, jadi
   `--force qc` yang menghasilkan skrip yang sama tidak membuat ulang suara dan gambar AI.
 
-Fase I-2: research, script, qc, seo. Fase I-3: tts, visuals, render. Langkah lain menyusul (lihat
+Fase I-2: research, script, qc, seo. Fase I-3: tts, visuals, render. Fase I-5: publish_youtube (hanya run
+sungguhan dengan youtube.api_upload = true; unggah uji lewat upload_test). Langkah lain menyusul (lihat
 INTEGRATION_PLAN.md) dan dilewati sampai tersedia.
 """
 from __future__ import annotations
@@ -31,14 +32,15 @@ from datetime import date
 import common
 
 from . import cancel as cancelmod
-from . import config, genres, media, research, state, timeutil, writer
+from . import config, genres, media, research, state, timeutil, writer, youtube
 from .config import ChannelConfig, ConfigError
 from .runctx import DEPENDS, FINGERPRINTS, STEPS, RunContext, RunLocked, downstream, sha
-from .schemas import QC, Issue, Metadata, RenderInfo, Research, Script, Visuals, Words
+from .schemas import QC, HistoryEntry, Issue, Metadata, RenderInfo, Research, Script, Visuals, Words, YouTubeResult
 
 PLAN_STEPS = ("research", "script", "qc", "seo")
 MEDIA_STEPS = ("tts", "visuals", "render")
-IMPLEMENTED = {*PLAN_STEPS, *MEDIA_STEPS}
+PUBLISH_STEPS = ("publish_youtube",)
+IMPLEMENTED = {*PLAN_STEPS, *MEDIA_STEPS, *PUBLISH_STEPS}
 ALIASES = {"plan": PLAN_STEPS, "media": MEDIA_STEPS, "video": PLAN_STEPS + MEDIA_STEPS}
 PUBLISHED = ("final.mp4", "final.jpg", "captions.srt")    # disalin ke output/channel/<tanggal>/
 
@@ -62,6 +64,7 @@ class Run:
     cancel: threading.Event | None = None
     on_progress: Callable[[str, float], None] | None = None
     step: str = ""
+    genre: str = ""                  # genre khusus run ini (--genre), dicatat di inputs.json
 
     def log(self, msg: str) -> None:
         self.ctx.log(msg)
@@ -168,6 +171,13 @@ def _begin(run: Run, step: str) -> None:
     run.ctx.invalidate(step)
 
 
+def _mark_src(run: Run, step: str, script: Script) -> None:
+    """Hasil langkah dipakai ulang karena sidik masukannya cocok: hasil itu juga milik naskah sekarang (mis. QC
+    menulis ulang naskah tanpa mengubah narasi). Tanpa ini, halaman & syarat unggah menganggapnya usang."""
+    if run.ctx.fingerprint(f"{step}_src") != sha(script):
+        run.ctx.set_fingerprint(f"{step}_src", sha(script))
+
+
 def _files_exist(run: Run, *names: str) -> bool:
     return all(os.path.isfile(run.ctx.path(n)) and os.path.getsize(run.ctx.path(n)) > 0 for n in names)
 
@@ -252,6 +262,7 @@ def step_seo(run: Run, force: bool) -> bool:
     res = _need(run, "research", Research, "seo")
     fp = fp_seo(script, res, run.cfg)
     if not force and _reuse(run, "seo", "metadata", Metadata, fp):
+        _mark_src(run, "seo", script)
         return False
     _begin(run, "seo")
     run.ctx.save("metadata", writer.seo(run.cfg, script, res, settings=run.settings, log=run.log))
@@ -329,6 +340,7 @@ def step_tts(run: Run, force: bool) -> bool:
     script = _passed_qc(run, "tts")
     if not force and _files_exist(run, "voice.wav") and _reuse(run, "tts", "words", Words,
                                                                 fp_tts(script, run.cfg)):
+        _mark_src(run, "tts", script)
         return False
     _begin(run, "tts")
     from . import render, voice
@@ -381,6 +393,7 @@ def step_visuals(run: Run, force: bool) -> bool:
     words = _need(run, "words", Words, "visuals")
     fp = fp_visuals(script, words, run.cfg)
     if not force and _reuse(run, "visuals", "visuals", Visuals, fp, lambda v: _visuals_ok(run, v, words)):
+        _mark_src(run, "visuals", script)
         return False
     _begin(run, "visuals")
     from . import visuals
@@ -431,6 +444,9 @@ def step_render(run: Run, force: bool) -> bool:
     fp = fp_render(words, vis, run.cfg, run.ctx.day)
     if not force and _reuse(run, "render", "render", RenderInfo, fp,
                             lambda r: r.valid and _files_exist(run, "final.mp4")):
+        if run.ctx.fingerprint("render_media") != sha(words, vis):
+            run.ctx.set_fingerprint("render_media", sha(words, vis))
+        _mark_src(run, "render", _need(run, "script", Script, "render"))
         _refresh_description(run)
         _publish_local(run)
         return False
@@ -446,6 +462,7 @@ def step_render(run: Run, force: bool) -> bool:
         raise StepError("render", "Validasi video gagal: " + "; ".join(info.problems) + ". Video tidak di-upload.")
     run.ctx.set_fingerprint("render", fp)
     run.ctx.set_fingerprint("render_src", sha(_need(run, "script", Script, "render")))   # video milik skrip ini
+    run.ctx.set_fingerprint("render_media", sha(words, vis))     # suara & visual yang benar-benar ada di video
     _refresh_description(run)
     run.log(f"render: hasil disalin ke {_publish_local(run)}")
     if info.needs_review:
@@ -453,8 +470,170 @@ def step_render(run: Run, force: bool) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------
+# Langkah publikasi
+# --------------------------------------------------------------------------
+AGAIN = "Buat ulang videonya (tombol \"Buat ulang video\" di halaman Channel; hasil yang masih cocok dipakai ulang)."
+
+
+class UploadBlocked(StepError):
+    """Video belum boleh diunggah. rebuild = bisa diperbaiki dengan membuat ulang video run itu."""
+
+    def __init__(self, msg: str, rebuild: bool):
+        super().__init__("publish_youtube", msg)
+        self.rebuild = rebuild
+
+
+def _upload_ready(run: Run, step: str) -> tuple[Script, Metadata, RenderInfo, Visuals]:
+    """Syarat upload (SPEC bagian 8: tidak pernah upload bila QC atau validasi render gagal):
+    - QC lulus untuk naskah dan pengaturan sekarang;
+    - video lolos validasi, dibuat dari naskah itu, dan merupakan render terbaru dari suara, visual, dan pengaturan
+      video sekarang (deskripsi, kredit stok, dan riwayat disusun dari visual yang sama dengan isi video);
+    - judul & deskripsi dibuat untuk naskah itu.
+    Pesannya ditampilkan apa adanya di halaman (upload_block) dan di log."""
+    def stop(msg: str, rebuild: bool = True):
+        raise UploadBlocked(msg + (" " + AGAIN if rebuild else ""), rebuild)
+
+    script = run.ctx.load("script", Script)
+    res = run.ctx.load("research", Research)
+    qc = run.ctx.load("qc", QC)
+    if script is None or res is None or qc is None:
+        stop("Rencana video belum lengkap (riset, naskah, atau QC belum ada).")
+    if run.ctx.fingerprint("qc") != fp_qc(script, res, run.cfg):
+        stop("Naskah atau pengaturan channel berubah setelah diperiksa QC.")
+    if not qc.passed:
+        stop("QC belum lulus; video tidak diunggah.", rebuild=False)
+    info = run.ctx.load("render", RenderInfo)
+    if info is None or not info.valid or not _files_exist(run, "final.mp4"):
+        stop("Video belum ada atau tidak lolos validasi render; video tidak diunggah.",
+             rebuild=info is None or info.valid)
+    src = sha(script)
+    fps = run.ctx.fingerprints()
+    if not all(fps.get(f"{s}_src") == src for s in ("tts", "visuals", "render")):
+        stop("Suara, visual, atau video dibuat dari naskah lain.")
+    words = run.ctx.load("words", Words)
+    vis = run.ctx.load("visuals", Visuals)
+    # isi video = suara & visual sekarang. Run lama tanpa catatan itu: sidik render lengkap (termasuk pengaturan).
+    media_ok = words is not None and vis is not None and (
+        fps.get("render_media") == sha(words, vis) if fps.get("render_media")
+        else fps.get("render") == fp_render(words, vis, run.cfg, run.ctx.day))
+    if not media_ok:
+        stop("Video belum dibuat ulang setelah suara atau visual berubah.")
+    meta = run.ctx.load("metadata", Metadata)
+    if meta is None or fps.get("seo_src") != src:
+        stop("Judul & deskripsi belum dibuat untuk naskah ini.")
+    if fps.get("seo") != fp_seo(script, res, run.cfg):
+        stop("Judul, tag, atau kategori belum dibuat ulang untuk pengaturan sekarang.")
+    return script, meta, info, vis
+
+
+def _record_history(run: Run, script: Script, meta: Metadata, vis: Visuals, info: RenderInfo,
+                    res: YouTubeResult) -> None:
+    """Video yang sudah ada di YouTube masuk riwayat (dedupe topik 60 hari, rotasi format, klip stok)."""
+    found = run.ctx.load("research", Research)
+    qc = run.ctx.load("qc", QC)
+    state.upsert_history(HistoryEntry(
+        date=run.ctx.day.isoformat(), topic=found.chosen.topic if found else script.topic, title=meta.title,
+        format=script.format, hook=script.hook, video_id=res.video_id, clip_ids=vis.clip_ids,
+        qc_score=qc.score if qc else 0, duration=round(info.duration, 2)))
+
+
+def _report_upload(run: Run, res: YouTubeResult) -> None:
+    if res.status == "masalah":
+        run.log(f"youtube: PERINGATAN video terunggah tetapi tidak sesuai harapan: {res.note} ({res.studio_url})")
+    elif res.verified:
+        run.log(f"youtube: terverifikasi ({res.privacy}{', tayang ' + res.publish_at_wib if res.publish_at_wib else ''})")
+    else:
+        run.log(f"youtube: {res.note or 'belum terverifikasi'} Status dicek lagi nanti (tombol Cek status).")
+    if res.playlist_error:
+        run.log(f"youtube: PERINGATAN playlist: {res.playlist_error}")
+
+
+def _publish(run: Run, *, test: bool) -> YouTubeResult:
+    step = "publish_youtube"
+    script, meta, info, vis = _upload_ready(run, step)
+    privacy, at, why = youtube.privacy_plan(run.cfg, needs_review=info.needs_review, test=test)
+    run.log(f"youtube: {why}")
+    # deskripsi disusun dari visual yang sama dengan isi video (kredit stok, pengungkapan AI)
+    summary = meta.summary or meta.description.split("\n\nSumber:", 1)[0]
+    desc = writer.build_description(summary, script, meta.hashtags, uses_stock=vis.uses_stock,
+                                    uses_ai=vis.uses_ai_images, credits=writer.stock_credits(vis))
+    if desc != meta.description:
+        meta = meta.model_copy(update={"description": desc})
+        run.ctx.save("metadata", meta)
+    try:
+        body = youtube.video_body(meta, run.cfg, privacy=privacy, publish_at=at)
+        res = youtube.publish(run.ctx, run.ctx.path("final.mp4"), body,
+                              publish_at_wib=timeutil.format_local(at) if at else "",
+                              playlist_id=run.cfg.youtube.playlist_id.strip(), test=test, source=sha(script),
+                              on_uploaded=lambda r: _record_upload(run, r), tz=run.cfg.schedule.timezone,
+                              cancel=run.cancel, progress=lambda f: run.progress(0.9 * f), log=run.log,
+                              settings=run.settings)
+    except youtube.YouTubeError as e:
+        raise StepError(step, str(e)) from None
+    _report_upload(run, res)
+    return res
+
+
+def _record_upload(run: Run, res: YouTubeResult) -> None:
+    """Catat video di YouTube ke riwayat. Isi lengkap (topik, format, hook, klip) hanya bila video itu dibuat dari
+    naskah run sekarang; video lama dari naskah sebelumnya dicatat dengan judulnya saja."""
+    script = run.ctx.load("script", Script)
+    meta = run.ctx.load("metadata", Metadata)
+    info = run.ctx.load("render", RenderInfo)
+    if script is not None and meta is not None and info is not None and res.source and res.source == sha(script):
+        _record_history(run, script, meta, run.ctx.load("visuals", Visuals) or Visuals(segments=[]), info, res)
+        return
+    title = res.title or "(judul tidak diketahui)"
+    state.upsert_history(HistoryEntry(date=run.ctx.day.isoformat(), topic=title, title=title,
+                                      video_id=res.video_id))
+    run.log("youtube: video di YouTube berasal dari naskah sebelumnya; riwayat dicatat dengan judulnya saja")
+
+
+def _ensure_history(run: Run, res: YouTubeResult) -> None:
+    """Video sudah di YouTube tetapi belum masuk riwayat (mis. proses mati tepat setelah upload): lengkapi."""
+    if any(e.date == run.ctx.day.isoformat() and e.video_id == res.video_id for e in state.load_history()):
+        return
+    try:
+        _record_upload(run, res)
+        run.log("youtube: riwayat unggahan dilengkapi")
+    except (OSError, ValueError) as e:
+        run.log(f"youtube: PERINGATAN riwayat belum bisa dilengkapi ({e})")
+
+
+def step_publish_youtube(run: Run, force: bool) -> bool:
+    """Upload otomatis (run sungguhan, youtube.api_upload = true). --force tidak berlaku: satu run = satu video."""
+    old = run.ctx.load("youtube", YouTubeResult)
+    if old is not None and old.video_id:
+        run.log(f"lewati youtube: video sudah diunggah ({old.url}); tidak pernah diunggah dua kali")
+        if not run.dry_run:
+            _ensure_history(run, old)
+            if old.status == "diproses":
+                try:
+                    _report_upload(run, youtube.verify(run.ctx, old, settings=run.settings, strict=False))
+                except youtube.YouTubeError as e:
+                    run.log(f"youtube: status belum bisa dicek ({e})")
+        return False
+    if run.dry_run:
+        run.log("youtube: uji coba, video tidak diunggah")
+        return False
+    if not run.cfg.youtube.api_upload:
+        run.log("youtube: upload lewat API nonaktif (youtube.api_upload = false); unggah manual memakai paket di "
+                "halaman Channel")
+        return False
+    info = run.ctx.load("render", RenderInfo)
+    if info is not None and info.valid and info.needs_review:
+        # render.py: video yang sah tetapi variasi visualnya kurang wajib dicek manusia dulu
+        run.log("youtube: PERINGATAN video perlu dicek manusia, jadi tidak diunggah otomatis. Tonton dulu, lalu "
+                "pakai Unggah uji (private) di halaman Channel.")
+        return False
+    _publish(run, test=False)
+    return True
+
+
 STEP_FUNCS = {"research": step_research, "script": step_script, "qc": step_qc, "seo": step_seo,
-              "tts": step_tts, "visuals": step_visuals, "render": step_render}
+              "tts": step_tts, "visuals": step_visuals, "render": step_render,
+              "publish_youtube": step_publish_youtube}
 
 
 # --------------------------------------------------------------------------
@@ -489,6 +668,7 @@ def _adopt_legacy(run: Run) -> None:
                 if ctx.load("render", RenderInfo) is not None:
                     fps["render"] = fp_render(words, vis, run.cfg, ctx.day)
                     fps["render_src"] = sha(script)
+                    fps["render_media"] = sha(words, vis)
     for step, value in fps.items():
         ctx.set_fingerprint(step, value)
     run.log("run lama: hasil yang sudah ada dipakai apa adanya (" + ", ".join(fps) + ")")
@@ -538,6 +718,9 @@ def _run_steps(run: Run, steps: list[str], force: list[str], cancel: threading.E
         # memakai sidik masukannya (tidak ada suara/gambar AI yang dibuat ulang bila masukannya sama)
         forced = step in force or (step in PLAN_STEPS and any(d in ran for d in DEPENDS.get(step, ())))
         did = STEP_FUNCS[step](run, forced)
+        # genre khusus run ini ikut menentukan sidik hasil; dicatat setelah langkah rencana/media selesai dengannya
+        if step in (*PLAN_STEPS, *MEDIA_STEPS) and run.ctx.fingerprint("genre") != run.genre:
+            run.ctx.set_fingerprint("genre", run.genre)
         run.progress(1.0)
         (run.ran if did else run.skipped).append(step)
         if did:
@@ -565,31 +748,151 @@ def run_daily(day: date | None = None, *, dry_run: bool = False, force: list[str
     today = timeutil.today_local(cfg.schedule.timezone)
     day = day or today
     ctx = RunContext(day, echo=echo)
-    run = Run(ctx, cfg, settings, dry_run, cancel=cancel, on_progress=on_progress)
+    run = Run(ctx, cfg, settings, dry_run, cancel=cancel, on_progress=on_progress, genre=genre or "")
     try:
         ctx.acquire()
     except RunLocked as e:
         echo(f"[channel] {e}")
         return EXIT_LOCKED
     run.step = "-"
-    try:
+
+    def body():
         run.log(f"mulai run {day.isoformat()} ({'uji coba' if dry_run else 'sungguhan'}), niche: {cfg.channel.niche}")
         freed = state.prune_runs(min(day, today), keep=(day.isoformat(), today.isoformat()))
         if freed:
             run.log(f"bersih-bersih: {freed} berkas sementara dari run lama dihapus")
         _adopt_legacy(run)
-        with cancelmod.cancel_scope(cancel):       # panggilan AI & riset ikut berhenti saat dibatalkan
-            _run_steps(run, steps, force, cancel)
+        _run_steps(run, steps, force, cancel)
         run.log(f"selesai. dijalankan: {', '.join(run.ran) or '-'}; dipakai ulang: {', '.join(run.skipped) or '-'}")
+
+    return _guarded(run, body)
+
+
+def _guarded(run: Run, body: Callable[[], None]) -> int:
+    """Jalankan isi run yang sudah memegang kunci: pembatalan & kegagalan dicatat dengan cara yang sama, kunci
+    selalu dilepas."""
+    try:
+        with cancelmod.cancel_scope(run.cancel):     # panggilan AI, riset & upload ikut berhenti saat dibatalkan
+            body()
         return EXIT_OK
     except media.Cancelled:
         run.log(f"DIBATALKAN di langkah {run.step}")
         return EXIT_FAILED
     except Exception as e:  # noqa: BLE001  semua kegagalan langkah dilaporkan dengan cara yang sama
         run.log(f"GAGAL di langkah {getattr(e, 'step', None) or run.step}: {e}")
-        with open(ctx.path("run.log"), "a", encoding="utf-8") as f:
+        with open(run.ctx.path("run.log"), "a", encoding="utf-8") as f:
             f.write(traceback.format_exc())
         # alert Telegram (nama langkah + 30 baris log terakhir) ditambahkan di Fase I-6
         return EXIT_FAILED
     finally:
+        run.ctx.release()
+
+
+def upload_test(day: date, *, echo=print, cancel: threading.Event | None = None,
+                on_progress: Callable[[str, float], None] | None = None) -> int:
+    """Unggah uji atas perintah pengguna (tombol di halaman atau CLI): video run `day` diunggah sebagai private
+    tanpa jadwal. Boleh walau channel masih nonaktif atau youtube.api_upload = false, karena tidak ada yang
+    tayang tanpa pengguna. Syarat QC & validasi render tetap berlaku, dan tetap hanya sekali per run."""
+    settings = common.load_settings()
+    ctx = RunContext(day, echo=echo)
+    try:
+        cfg = run_config(ctx, settings)
+    except ConfigError as e:
+        echo(f"[channel] {e}")
+        return EXIT_CONFIG
+    if not os.path.isfile(ctx.path("render.json")):
+        echo(f"[channel] Run {day.isoformat()} belum punya video. Buat videonya dulu.")
+        return EXIT_CONFIG
+    run = Run(ctx, cfg, settings, dry_run=False, cancel=cancel, on_progress=on_progress)
+    try:
+        ctx.acquire()
+    except RunLocked as e:
+        echo(f"[channel] {e}")
+        return EXIT_LOCKED
+    run.step = "publish_youtube"
+
+    def body():
+        run.progress(0.0)
+        old = ctx.load("youtube", YouTubeResult)
+        if old is not None and old.video_id:
+            run.log(f"lewati youtube: video tanggal ini sudah diunggah ({old.url}); tidak diunggah ulang")
+            _ensure_history(run, old)
+            did = "-; dipakai ulang: publish_youtube"
+        else:
+            run.log(f"mulai unggah uji {day.isoformat()} (private)")
+            _refresh_description(run)
+            _publish(run, test=True)
+            did = "publish_youtube; dipakai ulang: -"
+        run.progress(1.0)
+        run.log(f"selesai. dijalankan: {did} (unggah uji)")     # penanda selesai yang sama dengan run biasa
+
+    return _guarded(run, body)
+
+
+def recheck_upload(day: date) -> YouTubeResult | None:
+    """Cek ulang status video yang sudah diunggah (1 unit kuota) dan coba lagi playlist yang gagal."""
+    ctx = RunContext(day, echo=None)
+    if not os.path.isfile(ctx.path("youtube.json")):
+        return None
+    settings = common.load_settings()
+    cfg = config.load_config(settings)
+    ctx.acquire()                       # RunLocked bila run tanggal ini sedang berjalan
+    try:
+        old = ctx.load("youtube", YouTubeResult)     # dibaca setelah mengunci: tidak menimpa tulisan run lain
+        if old is None or not old.video_id:
+            return None
+        here = youtube.account().get("channel_id", "")
+        if old.channel_id and not here:
+            here = youtube._save_account(**youtube.fetch_channel(settings=settings),
+                                         checked_at=youtube._now_iso()).get("channel_id", "")
+        if old.channel_id and here and old.channel_id != here:
+            raise youtube.YouTubeError(f"Video ini ada di channel lain ({old.channel_title or old.channel_id}). "
+                                       "Hubungkan channel itu untuk mengecek statusnya.")
+        # privasi yang diubah pengguna di YouTube Studio (mis. ditayangkan) bukan masalah
+        res = youtube.verify(ctx, old, settings=settings, strict=False)
+        if cfg.youtube.playlist_id.strip() and not res.playlist_added:
+            res = youtube.add_playlist_once(ctx, res, cfg.youtube.playlist_id.strip(), settings=settings)
+        _ensure_history(Run(ctx, cfg, settings, dry_run=False), res)
+        from .runs import failure
+        if (failure(ctx) or {}).get("step") == "publish_youtube":
+            # upload yang tadinya gagal di tahap akhir ternyata ada: tanda gagal di halaman dihapus
+            ctx.log("selesai. dijalankan: -; dipakai ulang: publish_youtube (cek status)")
+        return res
+    finally:
         ctx.release()
+
+
+def run_config(ctx: RunContext, settings: dict | None = None) -> ChannelConfig:
+    """Pengaturan yang dipakai run ini: pengaturan tersimpan + genre khusus run (--genre) bila ada."""
+    gid = ctx.fingerprint("genre") or None
+    try:
+        return prepare_config(gid, settings)
+    except ConfigError:
+        if gid is None:
+            raise
+        raise ConfigError(f"Run ini dibuat dengan genre '{gid}' yang tidak dikenal lagi.") from None
+
+
+def upload_block(day: date) -> dict:
+    """Untuk halaman, tanpa jaringan: {"block": alasan belum bisa diunggah ('' = siap), "rebuild": bisa diperbaiki
+    dengan membuat ulang video run itu, "genre": genre khusus run (--genre) untuk tombol buat ulang}. Pemeriksaannya
+    sama dengan saat upload."""
+    ctx = RunContext(day, echo=None)
+    genre = ctx.fingerprint("genre")
+    out = {"block": "", "rebuild": False, "replan": False, "genre": genre}
+    old = ctx.load("youtube", YouTubeResult)
+    if old is not None and old.video_id:
+        return {**out, "block": "Sudah diunggah."}
+    settings = common.load_settings()
+    try:
+        run = Run(ctx, run_config(ctx, settings), settings, dry_run=True)
+        _upload_ready(run, "publish_youtube")
+    except UploadBlocked as e:
+        res = ctx.load("research", Research)
+        # membuat ulang akan riset/menulis naskah baru (pengaturan channel berubah): halaman minta konfirmasi
+        replan = res is None or ctx.fingerprint("research") != fp_research(run.cfg) or \
+            ctx.fingerprint("script") != fp_script(res, run.cfg)
+        return {**out, "block": str(e), "rebuild": e.rebuild, "replan": e.rebuild and replan}
+    except (ConfigError, StepError) as e:
+        return {**out, "block": str(e)}
+    return out

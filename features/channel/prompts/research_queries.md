@@ -15,6 +15,12 @@ Tugas: usulkan {{ n }} kata kunci pencarian Wikipedia untuk menemukan bahan vide
 {% endfor %}{% else %}  (belum ada)
 {% endif %}
 - Hindari topik terlarang: {{ banned_topics | join(", ") }}.
+{% if trends %}
+
+Judul video pendek YouTube yang sedang banyak ditonton (hanya petunjuk minat penonton, BUKAN sumber fakta;
+jangan menyalin judul, isi, atau gaya video orang lain):
+{% for t in trends %}  - {{ t }}
+{% endfor %}{% endif %}
 {% if learnings %}
 
 Pelajaran dari performa video sebelumnya (pakai untuk memilih arah topik):

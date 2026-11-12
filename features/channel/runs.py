@@ -19,7 +19,7 @@ import common
 
 from . import config, state
 from .runctx import FINGERPRINTS, OUTPUTS, RunContext, lock_active, sha
-from .schemas import QC, Metadata, RenderInfo, Research, Script, Visuals, Words
+from .schemas import QC, Metadata, RenderInfo, Research, Script, Visuals, Words, YouTubeResult
 
 STEP_ORDER = ("research", "script", "qc", "seo", "tts", "visuals", "render")
 SOURCED = ("seo", "tts", "visuals", "render")      # hasil yang dibuat dari naskah tertentu
@@ -133,6 +133,7 @@ def run_summary(day: date) -> dict:
     meta = ctx.load("metadata", Metadata) if cur["seo"] else None
     qc = ctx.load("qc", QC)
     render = ctx.load("render", RenderInfo) if cur["render"] else None
+    yt = ctx.load("youtube", YouTubeResult)
     topic = script.topic if script else (research.chosen.topic if research else "")
     return {
         "date": day.isoformat(),
@@ -143,6 +144,8 @@ def run_summary(day: date) -> dict:
         "render": ({"valid": render.valid, "duration": render.duration, "needs_review": render.needs_review}
                    if render else None),
         "stale_video": os.path.isfile(ctx.path("final.mp4")) and not cur["render"],
+        "uploaded": ({"video_id": yt.video_id, "url": yt.url, "status": yt.status, "verified": yt.verified}
+                     if yt is not None and yt.video_id else None),
         "failed": failure(ctx),
         "running": locked(ctx),
         "updated": max((_mtime(ctx.path(n)) for n in os.listdir(ctx.dir)), default=0) if os.path.isdir(ctx.dir) else 0,
@@ -152,7 +155,8 @@ def run_summary(day: date) -> dict:
 
 def _broken(day: date, e: Exception) -> dict:
     return {"date": day.isoformat(), "topic": "", "title": "", "format": "", "qc": None, "render": None,
-            "stale_video": False, "running": False, "updated": 0, "video": "", "thumb": "", "captions": "",
+            "stale_video": False, "uploaded": None, "running": False, "updated": 0, "video": "", "thumb": "",
+            "captions": "",
             "published": False, "failed": {"step": "-", "cancelled": False, "message": f"Folder run rusak: {e}"[:300]}}
 
 
@@ -240,7 +244,37 @@ def run_detail(day: date) -> dict | None:
                    "warnings": words.warnings} if words else None),
         "steps": step_states(ctx, summary["failed"], cur),
         "log": last_run_lines(ctx)[-80:],
+        "youtube": current("youtube", YouTubeResult),
+        "youtube_stale": _youtube_stale(ctx, script),
+        **_upload_fields(day, summary),
     }
+
+
+def _upload_fields(day: date, summary: dict) -> dict:
+    """upload_ready + alasan bila belum siap. Run tanpa video yang lolos validasi tidak perlu diperiksa."""
+    if summary.get("uploaded") or not (summary.get("render") or {}).get("valid"):
+        return {"upload_ready": False, "upload_block": "", "upload_rebuild": False, "upload_replan": False,
+                "run_genre": ""}
+    b = upload_block(day)
+    return {"upload_ready": b["block"] == "", "upload_block": b["block"], "upload_rebuild": b["rebuild"],
+            "upload_replan": b.get("replan", False), "run_genre": b["genre"]}
+
+
+def _youtube_stale(ctx: RunContext, script: Script | None) -> bool:
+    """Video di YouTube dibuat dari naskah sebelumnya (run diulang setelah diunggah)."""
+    yt = ctx.load("youtube", YouTubeResult)
+    return bool(yt is not None and yt.video_id and yt.source and script is not None and yt.source != sha(script))
+
+
+def upload_block(day: date) -> dict:
+    """{"block", "rebuild", "genre"}: lihat pipeline.upload_block. Pemeriksaannya sama dengan saat upload."""
+    from . import pipeline
+    try:
+        return pipeline.upload_block(day)
+    except Exception as e:  # noqa: BLE001  kegagalan memeriksa tidak boleh membuat halaman gagal dimuat
+        traceback.print_exc()
+        return {"block": f"Kesiapan unggah tidak bisa diperiksa: {e}"[:300], "rebuild": False, "replan": False,
+                "genre": ""}
 
 
 def run_file(day: date, name: str) -> str | None:
