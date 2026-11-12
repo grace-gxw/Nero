@@ -30,6 +30,8 @@ VOICES = {"id-ID-ArdiNeural": "Pria (Ardi)", "id-ID-GadisNeural": "Wanita (Gadis
 VOICE_SECONDS_PER_WORD = {"id-ID-ArdiNeural": 0.357, "id-ID-GadisNeural": 0.469}
 VIDEO_TAIL_SECONDS = 0.7      # video berlanjut sebentar setelah suara selesai
 NARRATION_GAPS = 7            # jeda antar-bagian narasi (hook + ±6 segmen + CTA)
+MAX_TTS_RATE = 15             # SPEC 6.7: rate suara dinaikkan paling banyak sampai +15%
+RENDER_SLACK_SECONDS = 3      # SPEC 6.9: durasi video boleh di luar target_seconds sejauh ±3 dtk
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
@@ -196,9 +198,8 @@ def words_range(cfg: ChannelConfig) -> tuple[int, int]:
     target_seconds, dengan sisa 1 dtk di bawah dan 3 dtk di atas (rate bisa dinaikkan bila kelebihan)."""
     if cfg.video.words_range:
         return tuple(cfg.video.words_range)
-    base = VOICE_SECONDS_PER_WORD.get(cfg.tts.voice, max(VOICE_SECONDS_PER_WORD.values()))
-    pace = base * 1.05 / (1 + int(cfg.tts.rate.rstrip("%")) / 100)
-    overhead = VIDEO_TAIL_SECONDS + NARRATION_GAPS * cfg.tts.pause_ms / 1000
+    pace = _pace(cfg, int(cfg.tts.rate.rstrip("%")))
+    overhead = _overhead(cfg)
     lo_s, hi_s = cfg.video.target_seconds
     lo = max(20, int(-(-(lo_s + 1 - overhead) // pace)))
     hi = int((hi_s - 3 - overhead) // pace)
@@ -208,6 +209,30 @@ def words_range(cfg: ChannelConfig) -> tuple[int, int]:
         lo = max(20, round(mid - window / 2))
         hi = max(round(mid + window / 2), lo + window)
     return lo, hi
+
+
+def _pace(cfg: ChannelConfig, rate_pct: int) -> float:
+    """Detik per kata untuk suara pengaturan pada rate tertentu (terukur pada +5%)."""
+    base = VOICE_SECONDS_PER_WORD.get(cfg.tts.voice, max(VOICE_SECONDS_PER_WORD.values()))
+    return base * 1.05 / (1 + rate_pct / 100)
+
+
+def _overhead(cfg: ChannelConfig) -> float:
+    return VIDEO_TAIL_SECONDS + NARRATION_GAPS * cfg.tts.pause_ms / 1000
+
+
+def words_limits(cfg: ChannelConfig) -> tuple[int, int]:
+    """Batas keras jumlah kata yang diperiksa kode (QC). Di luar ini video pasti gagal validasi: terlalu pendek
+    walau dengan rate pengaturan, atau terlalu panjang walau rate sudah +15%. Prompt penulis tetap meminta rentang
+    ideal (words_range), jadi naskah yang sedikit meleset tidak perlu ditulis ulang."""
+    lo, hi = words_range(cfg)
+    if cfg.video.words_range:
+        return lo, hi
+    rate = int(cfg.tts.rate.rstrip("%"))
+    lo_s, hi_s = cfg.video.target_seconds
+    lo_ok = int(-(-(lo_s - RENDER_SLACK_SECONDS + 0.5 - _overhead(cfg)) // _pace(cfg, rate)))
+    hi_ok = int((hi_s - _overhead(cfg)) // _pace(cfg, max(rate, MAX_TTS_RATE)))
+    return max(20, min(lo, lo_ok)), max(hi, hi_ok)
 
 
 class ChannelConfig(_Section):

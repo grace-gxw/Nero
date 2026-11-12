@@ -318,6 +318,23 @@ class RentangKata(unittest.TestCase):
 
     def test_bisa_dikunci(self):
         self.assertEqual(config.words_range(cfg_test(words_range=(100, 120))), (100, 120))
+        self.assertEqual(config.words_limits(cfg_test(words_range=(100, 120))), (100, 120))
+
+    def test_batas_keras_qc_lebih_longgar_tapi_tetap_lolos_render(self):
+        """Uji nyata 12 Nov: Gemini ringan menulis ±115–120 kata; itu masih menghasilkan video yang sah, jadi
+        kode tidak boleh menolaknya. Batas keras = durasi yang masih lolos validasi render (±3 dtk)."""
+        for voice_name, pace in config.VOICE_SECONDS_PER_WORD.items():
+            cfg = cfg_test()
+            cfg = cfg.model_copy(update={"tts": cfg.tts.model_copy(update={"voice": voice_name})})
+            (lo, hi), (lo_ok, hi_ok) = config.words_range(cfg), config.words_limits(cfg)
+            self.assertLess(lo_ok, lo)
+            self.assertGreater(hi_ok, hi)
+            per_seg = (lo_ok - 12 + 5) // 6
+            script = Script.model_validate(long_script(n_words=per_seg))
+            self.assertGreaterEqual(script.word_count, lo_ok)
+            with tempfile.TemporaryDirectory() as d, mock.patch.object(voice, "edge_synthesize", FakeEdge(spw=pace)):
+                w = voice.synthesize(script, cfg, d, log=lambda m: None)
+            self.assertGreaterEqual(w.duration + voice.TAIL_SECONDS, 45 - 3, voice_name)
 
 
 class BersihBersih(ChannelSandbox):

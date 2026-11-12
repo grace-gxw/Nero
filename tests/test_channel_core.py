@@ -291,6 +291,20 @@ class Checkpoint(ChannelSandbox):
         b.acquire()
         b.release()
 
+    def test_kunci_proses_mati_diabaikan(self):
+        import subprocess
+        import sys
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()                                          # PID ini sudah tidak berjalan
+        a = runctx.RunContext(date(2026, 11, 12), echo=None)
+        os.makedirs(a.dir, exist_ok=True)
+        with open(a.path(".lock"), "w") as f:
+            f.write(str(p.pid))
+        self.assertFalse(runctx.pid_alive(p.pid))
+        self.assertTrue(runctx.pid_alive(os.getpid()))
+        a.acquire()                                       # tidak menunggu 3 jam
+        a.release()
+
 
 class Riwayat(ChannelSandbox):
     def entry(self, d, **kw):

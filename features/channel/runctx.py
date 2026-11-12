@@ -66,6 +66,31 @@ class RunLocked(RuntimeError):
     """Run untuk tanggal ini sedang berjalan."""
 
 
+def pid_alive(pid: int) -> bool:
+    """Proses dengan PID ini masih berjalan? (os.kill(pid, 0) tidak boleh dipakai: di Windows itu MEMATIKAN
+    prosesnya.)"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = k32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5             # akses ditolak = prosesnya ada
+        try:
+            code = ctypes.c_ulong()
+            return bool(k32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class RunContext:
     def __init__(self, day: date, root: str | None = None, echo=print):
         self.day = day
@@ -149,9 +174,12 @@ class RunContext:
         os.makedirs(self.dir, exist_ok=True)
         lock = self.path(".lock")
         try:
-            if time.time() - os.path.getmtime(lock) > LOCK_STALE_SECONDS:
+            with open(lock, encoding="utf-8") as f:
+                owner = int(f.read().strip() or 0)
+            # kunci sisa proses yang sudah mati (mis. Nero ditutup paksa) atau yang macet terlalu lama
+            if not pid_alive(owner) or time.time() - os.path.getmtime(lock) > LOCK_STALE_SECONDS:
                 os.remove(lock)
-        except OSError:
+        except (OSError, ValueError):
             pass
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)

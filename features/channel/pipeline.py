@@ -85,7 +85,7 @@ def fp_script(res: Research, cfg: ChannelConfig) -> str:
 
 
 def fp_qc(script: Script, res: Research, cfg: ChannelConfig) -> str:
-    return sha(script, res, cfg.channel.banned_topics, cfg.channel.audience, config.words_range(cfg),
+    return sha(script, res, cfg.channel.banned_topics, cfg.channel.audience, config.words_limits(cfg),
                cfg.visuals.allowed_types, cfg.visuals.max_ai_image_ratio, cfg.visuals.min_types_per_video)
 
 
@@ -284,7 +284,7 @@ def _refresh_description(run: Run) -> None:
 def _rewrite_length(run: Run, script: Script, *, seconds: float, goal: float, longer: bool) -> Script:
     """SPEC 6.7: narasi terlalu panjang (walau rate sudah maksimal) atau terlalu pendek untuk lolos validasi
     render -> agen skrip menulis ulang ke jumlah kata yang pas, lalu QC dan SEO diulang."""
-    lo_w, hi_w = config.words_range(run.cfg)
+    lo_w, hi_w = config.words_limits(run.cfg)
     target = min(hi_w, max(lo_w, round(script.word_count * goal / max(seconds, 0.1))))
     if (target <= script.word_count) if longer else (target >= script.word_count):
         raise StepError("tts", f"Narasi {seconds:.1f} dtk tidak bisa disesuaikan ke ±{goal:.0f} dtk dalam rentang "

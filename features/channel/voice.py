@@ -36,7 +36,7 @@ EDGE_TIMEOUT = 60             # detik per bagian narasi
 LEAD = 0.04                   # sisa hening sebelum kata pertama tiap bagian (detik)
 TAIL = 0.14                   # sisa setelah kata terakhir (ujung konsonan tidak terpotong)
 TAIL_SECONDS = config.VIDEO_TAIL_SECONDS   # video berlanjut sebentar setelah suara selesai
-MAX_RATE = 15                 # SPEC 6.7: rate dinaikkan paling banyak sampai +15%
+MAX_RATE = config.MAX_TTS_RATE   # SPEC 6.7: rate dinaikkan paling banyak sampai +15%
 RATE_STEP = 5
 RETRY_DELAY = 1.5
 

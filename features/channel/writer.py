@@ -51,7 +51,7 @@ def script_issues(script: Script, cfg: ChannelConfig, research: Research, fmt: s
                   recent_hooks: list[str]) -> list[Issue]:
     """Masalah yang bisa dipastikan kode tanpa AI."""
     out: list[Issue] = []
-    lo, hi = config.words_range(cfg)
+    lo, hi = config.words_limits(cfg)
     if not lo <= script.word_count <= hi:
         fix = "tambah fakta/kalimat" if script.word_count < lo else "pendekkan kalimat atau buang satu segmen"
         out.append(Issue(type="length", detail=f"jumlah kata yang diucapkan {script.word_count}, harus {lo}–{hi}",
@@ -246,8 +246,8 @@ def review(cfg: ChannelConfig, script: Script, research: Research, fmt: str, *, 
     variables = {
         "script": script.model_dump_json(indent=1), "sources": _sources(research),
         "banned_topics": cfg.channel.banned_topics, "recent_topics": list(recent_topics),
-        "recent_hooks": list(recent_hooks), "words_min": config.words_range(cfg)[0],
-        "words_max": config.words_range(cfg)[1], "word_count": script.word_count, "audience": cfg.channel.audience,
+        "recent_hooks": list(recent_hooks), "words_min": config.words_limits(cfg)[0],
+        "words_max": config.words_limits(cfg)[1], "word_count": script.word_count, "audience": cfg.channel.audience,
     }
     qc = llm.generate_json("qc", variables, QC, cfg.llm.temperature_strict, cfg=cfg, settings=settings,
                            allow_local=False, check=lambda q: coverage_problems(q, script), log=log)

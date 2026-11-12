@@ -18,7 +18,7 @@ from datetime import date
 
 from features.clip import engine
 
-from . import media
+from . import config, media
 from .config import ChannelConfig
 from .media import FPS, H, W
 from .schemas import RenderInfo, Visuals, Words
@@ -27,7 +27,7 @@ MUSIC_EXT = (".mp3", ".wav", ".m4a", ".ogg", ".flac", ".aac")
 MUSIC_MIN_SECONDS = 2.0
 MUSIC_FADE_IN = 0.8
 MUSIC_FADE_OUT = 1.5
-DURATION_SLACK = 3.0
+DURATION_SLACK = float(config.RENDER_SLACK_SECONDS)
 LENGTH_TOLERANCE = 0.15     # selisih durasi video akhir vs rencana yang masih diterima (detik)
 BASE_TIMEOUT = 300          # video dasar hanya menyalin video + mencampur audio
 AUDIO_RATE = 48000
