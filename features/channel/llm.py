@@ -28,13 +28,14 @@ import gemini_ai
 import local_ai
 from local_ai import LocalAIError
 
+from . import cancel
 from . import config as cfgmod
 from .config import ChannelConfig
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
 LOCAL_PROVIDERS = {"ollama"}
 MAX_WAIT = 60.0          # jeda terlama antar-percobaan (detik), walau server meminta lebih
-_sleep = time.sleep      # diganti di tes
+_sleep = cancel.sleep    # berhenti seketika bila run dibatalkan; diganti di tes
 
 _env = jinja2.Environment(loader=jinja2.FileSystemLoader(PROMPTS_DIR), undefined=jinja2.StrictUndefined,
                           keep_trailing_newline=True, autoescape=False, trim_blocks=True, lstrip_blocks=True)
@@ -216,6 +217,7 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
         raise LLMError("Tidak ada provider AI yang boleh dipakai untuk langkah ini.", calls)
 
     for provider in _order(order, cfg, s):
+        cancel.check_current()
         model = _model_for(provider, cfg, s)
         call = Call(provider, model)
         calls.append(call)
@@ -223,6 +225,7 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
         t0 = time.time()
         server_failed = False
         while attempt < cfg.llm.max_retries:
+            cancel.check_current()
             attempt += 1
             call.attempts = attempt
             usage: dict = {}

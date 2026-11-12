@@ -398,6 +398,18 @@ class TulisDanQC(ChannelSandbox):
         self.assertTrue(writer.has_quantity("Apollo 11 membawa 3 astronot", res))
         self.assertTrue(writer.has_quantity("Benarkah Pioneer 10 lebih dulu?", res))   # nama tidak ada di sumber
 
+    def test_kalimat_mitos_bukan_klaim_fakta(self):
+        """Uji nyata 12 Nov: QC ringan menggolongkan "Ada anggapan bahwa…" sebagai fakta tanpa bukti."""
+        self.assertTrue(writer.is_myth_statement("Ada anggapan bahwa Voyager 1 sudah keluar dari tata surya."))
+        self.assertTrue(writer.is_myth_statement("Benarkah Voyager 1 keluar dari tata surya?"))
+        self.assertFalse(writer.is_myth_statement("Benarkah begitu? Faktanya ia masih di heliosfer."))
+        self.assertFalse(writer.is_myth_statement("Ada anggapan bahwa banyak orang percaya ini."))
+        self.assertFalse(writer.is_myth_statement("Voyager 1 diluncurkan pada 1977."))
+        qc = QC.model_validate({"score": 9, "checks": [
+            {"segment_id": 1, "statement": "Ada anggapan bahwa hewan ini abadi.", "kind": "fact", "supported": True,
+             "evidence": ""}]})
+        self.assertEqual(writer.check_issues(qc, self.res), [])
+
     def test_kata_mutlak_di_kalimat_mitos(self):
         self.assertEqual(writer.asserted_markers("Ada anggapan bahwa Voyager 1 meninggalkan seluruh tata surya."), [])
         self.assertEqual(writer.asserted_markers("Benarkah semua bintang sama? Faktanya hanya sebagian."), ["hanya"])

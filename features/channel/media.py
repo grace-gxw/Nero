@@ -31,17 +31,8 @@ CLIP_CODEC = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt"
               "-profile:v", "high", "-g", str(FPS * 2), *COLOR_TAGS, "-an"]
 
 
-class Cancelled(Exception):
-    """Proses dibatalkan pengguna. Sengaja bukan RuntimeError: engine.render_clip menangkap RuntimeError untuk
-    pindah dari NVENC ke libx264 (pembatalan tidak boleh memicu itu)."""
-
-    def __init__(self, msg: str = "Dibatalkan."):
-        super().__init__(msg)
-
-
-def check_cancel(cancel: threading.Event | None) -> None:
-    if cancel is not None and cancel.is_set():
-        raise Cancelled()
+# pembatalan ada di modul ringan cancel.py (dipakai juga langkah rencana); diekspor ulang di sini
+from .cancel import Cancelled, check_cancel  # noqa: F401
 
 
 def frame_at(t: float, fps: int = FPS) -> int:

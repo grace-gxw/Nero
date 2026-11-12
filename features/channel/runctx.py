@@ -13,6 +13,7 @@ Integritas checkpoint:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -34,8 +35,21 @@ DEPENDS = {"research": (), "script": ("research",), "qc": ("script",), "seo": ("
 OUTPUTS = {"research": ("research.json",), "script": ("script.json",), "qc": ("qc.json",),
            "seo": ("metadata.json",), "tts": ("words.json", "voice.wav", "voice.mp3"),
            "visuals": ("visuals.json",),
-           "render": ("render.json", "final.mp4", "final.jpg", "captions.srt", "base.mkv")}
+           # berkas media lebih dulu: bila video sedang diputar, render.json lama tetap utuh (tidak setengah)
+           "render": ("final.mp4", "final.jpg", "captions.srt", "base.mkv", "render.json")}
+MEDIA_FILES = (".mp4", ".mkv", ".jpg", ".mp3", ".wav", ".srt")
+MEDIA_BUSY_SECONDS = 20     # pemutar video bisa menahan berkas ±15 dtk setelah dijeda
 FINGERPRINTS = "inputs.json"
+
+
+def lock_active(path: str) -> bool:
+    """Kunci run masih dipegang proses yang hidup dan belum basi (aturan yang sama untuk run & halaman)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            owner = int(f.read().strip() or 0)
+        return pid_alive(owner) and time.time() - os.path.getmtime(path) <= LOCK_STALE_SECONDS
+    except (OSError, ValueError):
+        return False
 
 
 def downstream(step: str) -> list[str]:
@@ -64,6 +78,10 @@ def sha(*parts) -> str:
 
 class RunLocked(RuntimeError):
     """Run untuk tanggal ini sedang berjalan."""
+
+
+class FileBusy(RuntimeError):
+    """Berkas hasil lama tidak bisa dihapus karena sedang dibuka program lain (mis. video sedang diputar)."""
 
 
 def pid_alive(pid: int) -> bool:
@@ -108,8 +126,7 @@ class RunContext:
         if not os.path.isfile(path):
             return None
         try:
-            with open(path, encoding="utf-8") as f:
-                return schema.model_validate(json.load(f))
+            return schema.model_validate(json.loads(state.read_text(path)))
         except (OSError, ValueError, ValidationError):
             return None
 
@@ -133,13 +150,16 @@ class RunContext:
     def invalidate(self, step: str) -> None:
         """Hapus hasil lama `step` beserta sidiknya (dipanggil saat langkah mulai bekerja)."""
         for name in OUTPUTS.get(step, ()):
+            media = name.endswith(MEDIA_FILES)
             try:
-                os.remove(self.path(name))
-            except FileNotFoundError:
-                pass
+                state.remove_retry(self.path(name), MEDIA_BUSY_SECONDS if media else 2.0)
+            except PermissionError:
+                hint = " (mis. sedang diputar)" if media else ""
+                raise FileBusy(f"{name} sedang dibuka program lain{hint}. Tutup lalu jalankan ulang.") from None
         data = self.fingerprints()
-        if step in data:
-            state.write_json_atomic(self.path(FINGERPRINTS), {k: v for k, v in data.items() if k != step})
+        keys = {step, f"{step}_src"}
+        if keys & set(data):
+            state.write_json_atomic(self.path(FINGERPRINTS), {k: v for k, v in data.items() if k not in keys})
 
     def cached(self, name: str, schema: type[BaseModel], force: bool = False) -> BaseModel | None:
         """Checkpoint: hasil lama yang valid, atau None bila langkah perlu dijalankan (atau dipaksa)."""
@@ -173,14 +193,10 @@ class RunContext:
     def acquire(self) -> None:
         os.makedirs(self.dir, exist_ok=True)
         lock = self.path(".lock")
-        try:
-            with open(lock, encoding="utf-8") as f:
-                owner = int(f.read().strip() or 0)
+        if os.path.exists(lock) and not lock_active(lock):
             # kunci sisa proses yang sudah mati (mis. Nero ditutup paksa) atau yang macet terlalu lama
-            if not pid_alive(owner) or time.time() - os.path.getmtime(lock) > LOCK_STALE_SECONDS:
+            with contextlib.suppress(OSError):
                 os.remove(lock)
-        except (OSError, ValueError):
-            pass
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError as e:

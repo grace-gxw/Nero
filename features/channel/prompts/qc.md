@@ -20,6 +20,9 @@ LANGKAH 1 — "checks": periksa SETIAP pernyataan di hook (segment_id 0), setiap
   "framing" hanya untuk kalimat pembuka/penghubung/ajakan tanpa klaim fakta (mis. pertanyaan di hook, CTA).
   Kalimat seperti "banyak orang mengira…" adalah klaim fakta tentang orang lain: "fact", kecuali ditulis
   sebagai pertanyaan atau anggapan tanpa menyebut seberapa banyak orang.
+  Di format myth_vs_fact, mitos yang ditulis sebagai pertanyaan ("Benarkah…?") atau anggapan ("Ada anggapan
+  bahwa…") lalu dibantah dengan fakta bersumber adalah "framing", bukan masalah fact. Yang diperiksa adalah
+  bantahannya, dan mitosnya tidak boleh disajikan sebagai kebenaran.
 - "supported": true hanya bila SUMBER menyatakan hal yang sama persis. Bila naskah melebih-lebihkan,
   mempersempit, atau mengubah makna (mis. menambah "hanya", "selalu", "pertama", "terbesar", mengubah
   lamanya uji coba menjadi batas kemampuan), isi false.

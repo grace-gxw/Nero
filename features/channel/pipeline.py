@@ -30,6 +30,7 @@ from datetime import date
 
 import common
 
+from . import cancel as cancelmod
 from . import config, genres, media, research, state, timeutil, writer
 from .config import ChannelConfig, ConfigError
 from .runctx import DEPENDS, FINGERPRINTS, STEPS, RunContext, RunLocked, downstream, sha
@@ -153,9 +154,7 @@ def _unpublish(run: Run) -> None:
     for name in PUBLISHED:
         path = os.path.join(_output_dir(run), name)
         try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
+            state.remove_retry(path, 20.0 if name.endswith(".mp4") else 2.0)
         except OSError as e:
             raise StepError(run.step, f"{path} sedang dibuka program lain ({e.strerror}). Tutup berkas itu lalu "
                                       "jalankan ulang.") from None
@@ -192,9 +191,10 @@ def step_research(run: Run, force: bool) -> bool:
     fp = fp_research(run.cfg)
     if not force and _reuse(run, "research", "research", Research, fp):
         return False
+    old = run.ctx.load("research", Research)        # riset diulang = minta topik baru, bukan topik yang sama
     _begin(run, "research")
     res = research.run(run.cfg, run.ctx.day, settings=run.settings, learnings=state.load_learnings(),
-                       log=run.log)
+                       avoid_topics=[old.chosen.topic] if old else [], log=run.log)
     run.ctx.save("research", res)
     run.ctx.set_fingerprint("research", fp)
     return True
@@ -256,6 +256,7 @@ def step_seo(run: Run, force: bool) -> bool:
     _begin(run, "seo")
     run.ctx.save("metadata", writer.seo(run.cfg, script, res, settings=run.settings, log=run.log))
     run.ctx.set_fingerprint("seo", fp)
+    run.ctx.set_fingerprint("seo_src", sha(script))     # halaman: metadata ini milik skrip yang mana
     _refresh_description(run)
     return True
 
@@ -362,6 +363,7 @@ def step_tts(run: Run, force: bool) -> bool:
         raise
     run.ctx.save("words", words)
     run.ctx.set_fingerprint("tts", fp_tts(script, run.cfg))
+    run.ctx.set_fingerprint("tts_src", sha(script))
     return True
 
 
@@ -390,6 +392,7 @@ def step_visuals(run: Run, force: bool) -> bool:
         raise StepError("visuals", str(e)) from None
     run.ctx.save("visuals", vis)
     run.ctx.set_fingerprint("visuals", fp)
+    run.ctx.set_fingerprint("visuals_src", sha(script))
     _refresh_description(run)
     run.log("visual: selesai (" + ", ".join(f"{v.segment_id}:{v.type}" for v in vis.segments) + ")")
     return True
@@ -410,7 +413,7 @@ def _publish_local(run: Run) -> str:
         tmp = dst + ".tmp"
         try:
             shutil.copy2(src, tmp)
-            os.replace(tmp, dst)
+            state.replace_retry(tmp, dst)
         except OSError as e:
             run.log(f"render: PERINGATAN {name} belum bisa disalin ke folder hasil ({e.strerror}); dicoba lagi nanti")
             if os.path.exists(tmp):
@@ -442,6 +445,7 @@ def step_render(run: Run, force: bool) -> bool:
     if not info.valid:
         raise StepError("render", "Validasi video gagal: " + "; ".join(info.problems) + ". Video tidak di-upload.")
     run.ctx.set_fingerprint("render", fp)
+    run.ctx.set_fingerprint("render_src", sha(_need(run, "script", Script, "render")))   # video milik skrip ini
     _refresh_description(run)
     run.log(f"render: hasil disalin ke {_publish_local(run)}")
     if info.needs_review:
@@ -473,14 +477,18 @@ def _adopt_legacy(run: Run) -> None:
             fps["qc"] = fp_qc(script, res, run.cfg)
         if ctx.load("metadata", Metadata) is not None:
             fps["seo"] = fp_seo(script, res, run.cfg)
+            fps["seo_src"] = sha(script)
         words = ctx.load("words", Words)
         if words is not None and os.path.isfile(ctx.path("voice.wav")):
             fps["tts"] = fp_tts(script, run.cfg)
+            fps["tts_src"] = sha(script)
             vis = ctx.load("visuals", Visuals)
             if vis is not None:
                 fps["visuals"] = fp_visuals(script, words, run.cfg)
+                fps["visuals_src"] = sha(script)
                 if ctx.load("render", RenderInfo) is not None:
                     fps["render"] = fp_render(words, vis, run.cfg, ctx.day)
+                    fps["render_src"] = sha(script)
     for step, value in fps.items():
         ctx.set_fingerprint(step, value)
     run.log("run lama: hasil yang sudah ada dipakai apa adanya (" + ", ".join(fps) + ")")
@@ -515,6 +523,28 @@ def prepare_config(genre: str | None = None, settings: dict | None = None) -> Ch
     return cfg
 
 
+def _run_steps(run: Run, steps: list[str], force: list[str], cancel: threading.Event | None) -> None:
+    ran: set[str] = set()
+    for step in STEPS:
+        if step not in steps:
+            continue
+        if step not in IMPLEMENTED:
+            run.log(f"langkah {step} belum tersedia (menyusul di fase berikutnya), dilewati")
+            continue
+        run.step = step
+        media.check_cancel(cancel)
+        run.progress(0.0)
+        # langkah rencana ikut diulang bila langkah yang hasilnya ia pakai baru dijalankan; langkah media
+        # memakai sidik masukannya (tidak ada suara/gambar AI yang dibuat ulang bila masukannya sama)
+        forced = step in force or (step in PLAN_STEPS and any(d in ran for d in DEPENDS.get(step, ())))
+        did = STEP_FUNCS[step](run, forced)
+        run.progress(1.0)
+        (run.ran if did else run.skipped).append(step)
+        if did:
+            ran.add(step)
+    media.check_cancel(cancel)                   # dibatalkan saat langkah terakhir: bukan "selesai"
+
+
 def run_daily(day: date | None = None, *, dry_run: bool = False, force: list[str] = (), only: str | None = None,
               genre: str | None = None, echo=print, cancel: threading.Event | None = None,
               on_progress: Callable[[str, float], None] | None = None) -> int:
@@ -541,38 +571,22 @@ def run_daily(day: date | None = None, *, dry_run: bool = False, force: list[str
     except RunLocked as e:
         echo(f"[channel] {e}")
         return EXIT_LOCKED
-    current = "-"
+    run.step = "-"
     try:
         run.log(f"mulai run {day.isoformat()} ({'uji coba' if dry_run else 'sungguhan'}), niche: {cfg.channel.niche}")
         freed = state.prune_runs(min(day, today), keep=(day.isoformat(), today.isoformat()))
         if freed:
             run.log(f"bersih-bersih: {freed} berkas sementara dari run lama dihapus")
         _adopt_legacy(run)
-        ran: set[str] = set()
-        for step in STEPS:
-            if step not in steps:
-                continue
-            if step not in IMPLEMENTED:
-                run.log(f"langkah {step} belum tersedia (menyusul di fase berikutnya), dilewati")
-                continue
-            current = run.step = step
-            media.check_cancel(cancel)
-            run.progress(0.0)
-            # langkah rencana ikut diulang bila langkah yang hasilnya ia pakai baru dijalankan; langkah media
-            # memakai sidik masukannya (tidak ada suara/gambar AI yang dibuat ulang bila masukannya sama)
-            forced = step in force or (step in PLAN_STEPS and any(d in ran for d in DEPENDS.get(step, ())))
-            did = STEP_FUNCS[step](run, forced)
-            run.progress(1.0)
-            (run.ran if did else run.skipped).append(step)
-            if did:
-                ran.add(step)
+        with cancelmod.cancel_scope(cancel):       # panggilan AI & riset ikut berhenti saat dibatalkan
+            _run_steps(run, steps, force, cancel)
         run.log(f"selesai. dijalankan: {', '.join(run.ran) or '-'}; dipakai ulang: {', '.join(run.skipped) or '-'}")
         return EXIT_OK
     except media.Cancelled:
-        run.log(f"DIBATALKAN di langkah {current}")
+        run.log(f"DIBATALKAN di langkah {run.step}")
         return EXIT_FAILED
     except Exception as e:  # noqa: BLE001  semua kegagalan langkah dilaporkan dengan cara yang sama
-        run.log(f"GAGAL di langkah {getattr(e, 'step', None) or current}: {e}")
+        run.log(f"GAGAL di langkah {getattr(e, 'step', None) or run.step}: {e}")
         with open(ctx.path("run.log"), "a", encoding="utf-8") as f:
             f.write(traceback.format_exc())
         # alert Telegram (nama langkah + 30 baris log terakhir) ditambahkan di Fase I-6

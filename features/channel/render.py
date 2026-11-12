@@ -132,6 +132,9 @@ def base_args(list_path: str, voice_wav: str, music: str | None, total_frames: i
 # --------------------------------------------------------------------------
 # Validasi
 # --------------------------------------------------------------------------
+VISUAL_NAMES = {"stock": "video stok", "ai_image": "gambar AI", "motion_graphic": "grafik", "plain": "latar polos"}
+
+
 def needs_review(cfg: ChannelConfig, visuals: Visuals) -> list[str]:
     """Alasan video perlu dicek manusia: variasi visual kurang dari pengaturan, atau banyak latar polos."""
     out = []
@@ -139,7 +142,8 @@ def needs_review(cfg: ChannelConfig, visuals: Visuals) -> list[str]:
     real = sorted(types - {"plain"})
     need = min(cfg.visuals.min_types_per_video, len(cfg.visuals.allowed_types))
     if len(real) < need:
-        out.append(f"hanya {len(real)} jenis visual ({', '.join(sorted(types))}); minimal {need}")
+        names = ", ".join(VISUAL_NAMES.get(t, t) for t in sorted(types))
+        out.append(f"hanya {len(real)} jenis visual ({names}); minimal {need}")
     plain = sum(v.type == "plain" for v in visuals.segments)
     if plain * 3 > len(visuals.segments):
         out.append(f"{plain} dari {len(visuals.segments)} segmen hanya latar polos")

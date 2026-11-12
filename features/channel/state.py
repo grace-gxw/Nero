@@ -26,26 +26,70 @@ def data_path(*parts: str) -> str:
     return os.path.join(common.DATA, ID, *parts)
 
 
-def write_json_atomic(path: str, data) -> None:
+# Di Windows, berkas yang sedang dibaca proses/thread lain (mis. halaman Nero yang memantau run) tidak bisa
+# diganti atau dihapus sesaat. Coba ulang sebentar sebelum menyerah.
+RETRY_DELAY = 0.05
+
+
+def replace_retry(src: str, dst: str, seconds: float = 2.0) -> None:
+    import time
+    end = time.monotonic() + seconds
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(RETRY_DELAY)
+
+
+def remove_retry(path: str, seconds: float = 2.0) -> None:
+    """os.remove yang mencoba ulang saat berkas sedang dibuka; FileNotFoundError diabaikan."""
+    import time
+    end = time.monotonic() + seconds
+    while True:
+        try:
+            os.remove(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(RETRY_DELAY)
+
+
+def _write_atomic(path: str, text: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+        f.write(text)
+    try:
+        replace_retry(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def write_json_atomic(path: str, data) -> None:
+    _write_atomic(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def write_text_atomic(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    _write_atomic(path, text)
+
+
+def read_text(path: str) -> str:
+    """Baca seluruh isi lalu langsung tutup berkasnya (jendela bentrok dengan penulis sesingkat mungkin)."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
 
 
 def read_json(path: str, default):
     try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(read_text(path))
     except (OSError, ValueError):
         return default
 

@@ -15,14 +15,13 @@ from __future__ import annotations
 import calendar
 import html
 import re
-import time
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import unquote, urlsplit
 
 import requests
 from rapidfuzz import fuzz
 
-from . import llm, state
+from . import cancel, llm, state
 from .config import ChannelConfig
 from .schemas import Candidate, DuplicateCheck, QueryPlan, Research, ResearchDraft, Source
 
@@ -54,7 +53,7 @@ def clean_text(text: str) -> str:
 # Wikipedia (Action API: satu permintaan per pencarian, ringkasan artikel ikut terambil)
 # --------------------------------------------------------------------------
 REQUEST_GAP = 0.6        # jeda antar-permintaan (detik): Wikipedia membalas 429 bila terlalu rapat
-_sleep = time.sleep      # diganti di tes
+_sleep = cancel.sleep    # berhenti seketika bila run dibatalkan; diganti di tes
 _PAGE_PROPS = {"prop": "extracts|info|pageprops", "explaintext": 1, "inprop": "url", "ppprop": "disambiguation",
                "redirects": 1}
 
@@ -62,6 +61,7 @@ _PAGE_PROPS = {"prop": "extracts|info|pageprops", "explaintext": 1, "inprop": "u
 def _wiki_get(session, lang: str, params: dict) -> dict:
     http = session or requests
     for attempt in range(4):
+        cancel.check_current()
         _sleep(REQUEST_GAP)
         r = http.get(f"https://{lang}.wikipedia.org/w/api.php", headers=HEADERS, timeout=TIMEOUT,
                      params={"action": "query", **params, "format": "json", "formatversion": 2})
@@ -219,8 +219,9 @@ def _numbered(materials: list[Source]) -> list[dict]:
 
 
 def run(cfg: ChannelConfig, today: date, *, settings: dict | None = None, learnings: str = "",
-        log=print) -> Research:
-    recent = state.recent_topics(HISTORY_DAYS, today)
+        avoid_topics: list[str] = (), log=print) -> Research:
+    """avoid_topics: topik yang juga harus dihindari (mis. topik hari ini sebelum riset diulang)."""
+    recent = [*state.recent_topics(HISTORY_DAYS, today), *[t for t in avoid_topics if t]]
     common_vars = {"niche": cfg.channel.niche, "audience": cfg.channel.audience, "tone": cfg.channel.tone,
                    "recent_topics": recent, "learnings": learnings, "banned_topics": cfg.channel.banned_topics,
                    "today": today.isoformat(), "evergreen": cfg.research.evergreen_mode}

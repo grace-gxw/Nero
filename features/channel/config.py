@@ -64,7 +64,7 @@ class VideoCfg(_Section):
     resolution: tuple[int, int] = (1080, 1920)
     formats_rotation: list[Literal[FORMATS]] = Field(default_factory=lambda: list(FORMATS), min_length=3)
     music_dir: str = ""              # folder musik bebas royalti milik pengguna; kosong = tanpa musik
-    music_volume_db: float = -22
+    music_volume_db: float = Field(-22, ge=-60, le=0)   # 0 = musik sekeras suara narasi
     caption_style: str = "preset:klasik"   # gaya subtitle dari Clip Maker: preset:<id> atau id "Gaya saya"
 
     @field_validator("target_seconds")
@@ -361,6 +361,11 @@ def secret(name: str, settings: dict | None = None) -> str:
     return str((_section(s).get("keys") or {}).get(name) or "")
 
 
+def key_from_env(name: str) -> bool:
+    """Kunci ini diisi lewat environment variable (menimpa nilai tersimpan; tidak bisa dihapus dari halaman)."""
+    return bool(os.environ.get(ENV_KEYS.get(name, ""), "").strip())
+
+
 def key_status(settings: dict | None = None) -> dict[str, bool]:
     """{nama kunci: sudah diisi?}. Hanya ini yang boleh dikirim ke halaman."""
     s = settings if settings is not None else common.load_settings()
@@ -377,4 +382,5 @@ def public_settings(settings: dict | None = None) -> dict:
     s = settings if settings is not None else common.load_settings()
     cfg = load_config(s)
     return {"config": cfg.model_dump(mode="json"), "keys": key_status(s),
+            "keys_env": {name: key_from_env(name) for name in ENV_KEYS},
             "voices": VOICES, "formats": list(FORMATS), "gemini_model": gemini_model(cfg, s)}

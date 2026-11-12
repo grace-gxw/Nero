@@ -175,7 +175,9 @@ def check_issues(qc: QC, research: Research) -> list[Issue]:
     out = []
     for c in qc.checks:
         where = _where(c.segment_id)
-        if c.kind == "framing":
+        if c.kind == "framing" or is_myth_statement(c.statement):
+            # kalimat tanya/mitos ("Ada anggapan bahwa…", "Benarkah…?") tidak menyatakan isinya sebagai fakta,
+            # walau model QC kadang menggolongkannya "fact"
             if has_quantity(c.statement, research):
                 out.append(Issue(type="fact", detail=f"{where}: \"{c.statement}\" memuat angka tetapi tidak diperiksa "
                                                      "sebagai fakta", fix="beri bukti dari sumber atau hapus angkanya"))
@@ -210,13 +212,27 @@ def _markers(text: str, words) -> list[str]:
     return [w for w in words if re.search(rf"(?<!\w){re.escape(w.strip())}(?!\w)", low)]
 
 
+def _sentences(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if s.strip()]
+
+
+def _myth_sentence(sent: str) -> bool:
+    s = _norm(sent)
+    return s.endswith("?") or s.startswith(MYTH_OPENERS)
+
+
+def is_myth_statement(text: str) -> bool:
+    """Seluruh pernyataan berupa kalimat tanya/mitos, tanpa klaim tentang anggapan orang ("banyak orang")."""
+    sents = _sentences(text)
+    return bool(sents) and all(_myth_sentence(s) for s in sents) and not _markers(text, BELIEF_ID)
+
+
 def asserted_markers(text: str) -> list[str]:
     """Kata mutlak yang dinyatakan sebagai fakta. Di kalimat tanya atau kalimat mitos ("Ada anggapan bahwa
     semua…"), kata mutlak adalah isi mitos yang sedang dibantah, jadi hanya klaim tentang anggapan orang dihitung."""
     used: list[str] = []
-    for sent in re.split(r"(?<=[.!?])\s+", (text or "").strip()):
-        s = _norm(sent)
-        words = BELIEF_ID if s.endswith("?") or s.startswith(MYTH_OPENERS) else ABSOLUTE_ID
+    for sent in _sentences(text):
+        words = BELIEF_ID if _myth_sentence(sent) else ABSOLUTE_ID
         used += [w for w in _markers(sent, words) if w not in used]
     return used
 
