@@ -316,3 +316,54 @@ Temuan Fase I-6 (riset dokumen resmi, 12 Nov 2026):
   - Upload video ke Telegram tidak bisa dibatalkan dan bisa terkirim dua kali bila jawabannya hilang. Kini diunggah
     bertahap (bisa dibatalkan) dan tidak dicoba ulang otomatis bila hasilnya tidak pasti.
   - Hashtag platform (#Shorts…, #fyp…) dan hashtag di judul ikut masuk caption. Kini disaring.
+
+Temuan Fase I-7 (riset dokumen resmi Google + verifikasi adversarial, 13 Nov 2026):
+- YouTube Analytics API (`reports.query`) memakai tanggal waktu Pasifik dan datanya tertunda 48–72 jam (revision history
+  9 Sep 2026). `endDate` yang lewat dari data terakhir tidak gagal, hanya dipotong. API ini diaktifkan terpisah dari
+  Data API v3 dan butuh scope `youtube.readonly` di samping `yt-analytics.readonly` (keduanya sudah diminta sejak I-5).
+- Views Shorts dihitung setiap kali video mulai diputar atau diulang (sejak 31 Mar 2025), dan views semua format sejak
+  frame pertama (24 Agu 2026). `engagedViews` mempertahankan cara hitung lama, jadi itulah metrik utama analis.
+  `averageViewPercentage` bukan metrik inti; bila kombinasi ditolak (400), analis mengulang tanpa metrik itu.
+- `subscribersGained` per video hanya menghitung subscribe dari halaman video itu. Karena itu angka ini tidak dikirim
+  ke AI; pelanggan hanya dilaporkan untuk seluruh channel.
+- Supaya video lama dan baru adil, angka per video = 7 hari pertama sejak tayang. Satu panggilan per video
+  (`filters=video==ID`) dipakai karena itu bentuk laporan yang terdokumentasi; kuota Analytics tidak dipublikasikan
+  dan pemakaiannya ±30 panggilan per hari.
+- Developer Policies:
+  - Statistik channel sendiri boleh disimpan selama dibutuhkan, dengan izin yang dicek ulang tiap 30 hari
+    (III.E.4.b). Judul dan teks lain dari API maksimal 30 hari, jadi analis memakai judul buatan Nero.
+  - Metrik turunan dan skor gabungan dilarang tanpa persetujuan (III.E.4.h, kebijakan derived metrics Juni 2026).
+    Peringkat top/bottom 3 karena itu hanya memakai satu metrik mentah; jumlah, selisih, dan rata-rata termasuk
+    hitungan yang dibolehkan.
+  - Data dihapus dalam 7 hari bila izin dicabut lewat aplikasi, dan dihapus bila token tidak bisa diperbarui
+    (III.D.2.c). Nero menghapusnya langsung saat Putuskan atau `invalid_grant`.
+  - Authorized Data hanya untuk pengguna atau agen yang ia setujui (III.E.3.b). Paket gratis Gemini memakai prompt
+    untuk pengembangan produk dan bisa dibaca peninjau manusia. Karena itu mengirim statistik ke AI butuh izin tegas
+    (`analyst.share_with_ai`, bawaan mati), datanya tanpa ID video/channel, dan pelajaran tidak memuat angka.
+- Mode unggah manual (keputusan no. 5): Nero tidak tahu ID video yang diunggah pengguna. Analis mengenalinya dari
+  daftar upload channel bila judulnya sama persis dengan judul buatan Nero, lalu mencatatnya ke riwayat. Langkah
+  `state_update` (SPEC langkah 12) hanya melengkapi riwayat video yang diunggah lewat Nero.
+- Belum diputuskan: setelah izin dicabut, `youtube.json`, catatan sesi upload, dan riwayat (berisi ID video) tetap
+  disimpan sebagai penjaga upload ganda dan dedupe topik. Developer Policies III.D.2.c meminta semua Authorized Data
+  dihapus; ini perlu keputusan pengguna.
+- Review adversarial I-7 (4 reviewer + pemeriksa skeptis, 13 Nov 2026), semuanya diperbaiki dan dites:
+  - Galat sesaat YouTube Analytics (5xx, kuota, koneksi) sempat dianggap "tidak ada data": pelajaran lama terhapus,
+    analisis hari itu dianggap selesai, dan laporan mingguan kosong terkirim. Kini galat sesaat membuat analisis
+    memakai data sebelumnya. Laporan minggu itu tidak ditandai, jadi dicoba lagi di run berikutnya.
+  - Uji coba run harian menulis isi laporan (statistik) ke `run.log`, yang tidak ikut terhapus saat izin dicabut. Kini
+    log hanya mencatat jumlah video.
+  - Data performa tetap tersimpan saat `invalid_grant` muncul di jalur lain (unggah uji, cek status, tren), atau
+    setelah dihubungkan ke channel lain. Kini `access_token` menghapusnya saat `invalid_grant`, dan `analyst.load`
+    menghapus data channel lain. Putuskan ditolak selama analis berjalan, supaya data tidak ditulis ulang.
+  - Mematikan izin AI belum menghentikan pemakaian pelajaran di prompt. Kini `prompt_learnings(cfg)` memeriksa izin
+    dan keabsahan data. Mengubah izin juga menyusun/menarik pelajaran tanpa membaca YouTube lagi.
+  - Video yang diunggah sendiri (sudah dikenali analis) masih bisa diunggah lagi lewat Unggah uji / run otomatis.
+    Kini `_upload_ready` dan `step_publish_youtube` menolak tanggal yang riwayatnya sudah punya video.
+  - `weekly_report.json` ikut terhapus bersama data performa, dan mengganti hari laporan membuat laporan terkirim
+    2–3 kali. Kini berkas itu disimpan (hanya tanggal) dan dibandingkan sebagai tanggal.
+  - Video tercatat yang sudah dihapus menghalangi pengenalan unggahan ulang manual. Kini keberadaan video dicek dulu.
+  - Minggu pembanding tren bisa terpotong saat data tertunda lebih dari 3 hari. Kini rentangnya 28 hari, dan persen
+    hanya ditampilkan bila kedua minggu sama-sama 7 hari berdata.
+  - Halaman: pemutar video hari ini tersembunyi selama analisis, status laporan menampilkan kiriman minggu lalu,
+    kartu tidak dimuat ulang setelah Hubungkan/Putuskan, dan pesan izin AI/izin statistik keliru. Semua diperbaiki.
+

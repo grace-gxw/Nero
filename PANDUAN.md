@@ -197,8 +197,9 @@ Buka **Channel Otomatis** di menu kiri Nero.
    - Kotak **YouTube** menampilkan tombol **Unggah uji (private)** bila YouTube sudah terhubung, atau status video yang sudah diunggah.
    - Pilih tanggal lain di **Riwayat uji coba**.
    - Video yang lolos pemeriksaan disalin ke **Folder hasil** (`output\channel\<tanggal>\`).
+4. **Analitik.** Performa video buatan Nero di YouTube, pelajaran untuk video berikutnya, dan laporan mingguan (lihat **Analitik & laporan mingguan**).
 
-**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, YouTube (hubungkan, mode tayang, jam tayang, playlist, kata kunci tren, upload otomatis), dan sakelar **Aktifkan**. Jadwal harian belum tersedia, jadi sakelar ini belum menjalankan apa pun. Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
+**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, YouTube (hubungkan, mode tayang, jam tayang, playlist, kata kunci tren, upload otomatis), Telegram, Analitik (hari laporan mingguan, izin AI), dan sakelar **Aktifkan**. Jadwal harian belum tersedia, jadi sakelar ini belum menjalankan apa pun. Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
 
 Kunci API disimpan di `data/settings.json` dan diisi dari halaman Nero; nilainya tidak pernah ditampilkan lagi. Untuk baris perintah, setiap kunci juga bisa diisi lewat environment variable. Nilai dari environment variable menimpa yang tersimpan, dan halaman menandainya "dari environment variable":
 
@@ -255,7 +256,7 @@ Nero bisa mengunggah video ke channel YouTube Anda lewat YouTube Data API (grati
 **1. Siapkan Google Cloud (sekali saja, ±15 menit)**
 
 1. Buka [console.cloud.google.com](https://console.cloud.google.com), masuk dengan akun Google pemilik channel, lalu buat project baru (misalnya "Nero Channel").
-2. **APIs & Services → Library**: cari **YouTube Data API v3**, tekan **Enable**. Untuk statistik video nanti (Fase I-7), aktifkan juga **YouTube Analytics API**.
+2. **APIs & Services → Library**: cari **YouTube Data API v3**, tekan **Enable**. Cari juga **YouTube Analytics API** dan tekan **Enable**. API ini terpisah, dan dipakai untuk statistik video di kartu Analitik.
 3. Buka **Google Auth Platform → Overview → Get started**:
    - App name bebas, tetapi **jangan memakai kata "YouTube"**. Isi email dukungan.
    - Audience: **External**. Isi email kontak, setujui kebijakannya, lalu **Create**.
@@ -317,7 +318,7 @@ Bila suatu saat Anda tetap ingin mengajukan audit (misalnya untuk kuota tambahan
 Draf isian (bahasa Inggris, sesuaikan):
 - *Describe your work related to YouTube:* "Personal tool for my own YouTube channel. It researches a topic from public sources (Wikipedia, RSS), writes and fact-checks an original script, renders a short vertical video with my own voice-over/graphics and licensed stock footage, then uploads it to my channel as private for my review."
 - *API client:* "Nero, a desktop application that runs only on my own computer; single user (the channel owner); no public users."
-- *How the client uses API data:* "videos.insert to upload my own videos (private or scheduled), videos.list to verify processing and privacy status, playlistItems.insert to add my videos to my playlist, search.list (max 3 calls/day) to see which topics are popular. No API data is shown to other people, sold, or stored longer than 30 days."
+- *How the client uses API data:* "videos.insert to upload my own videos (private or scheduled), videos.list to verify processing and privacy status and to read my own videos' statistics, YouTube Analytics reports.query for my own channel's statistics, playlistItems.insert/list for my own uploads and playlist, search.list (max 3 calls/day) to see which topics are popular. No API data is shown to other people or sold. My channel statistics are stored only on my computer, refreshed daily, and deleted when I disconnect; other API data is not stored longer than 30 days."
 - *Quota justification:* "One upload per day; the default quota is sufficient."
 
 ### TikTok, Instagram, dan Telegram
@@ -348,6 +349,57 @@ Caption dan naskah dikirim sebagai blok teks yang mudah disalin dari ponsel. Bil
 
 Kiriman otomatis hanya berjalan bila Channel Otomatis **aktif** dan "Kirim paket harian & peringatan gagal ke Telegram" dicentang. Uji coba (`--dry-run`) hanya menuliskan isi ringkasannya di log. Kiriman yang terputus dilanjutkan dari bagian yang belum terkirim, dan paket yang sama tidak dikirim dua kali. Baris perintahnya: `telegram-chats`, `telegram-test`, dan `telegram-send --date YYYY-MM-DD`.
 
+### Analitik & laporan mingguan
+
+Kartu **4. Analitik** di halaman Channel menampilkan performa video buatan Nero di channel yang terhubung, 28 hari terakhir. Datanya dibaca sekali sehari oleh run harian (langkah pertama), atau kapan saja lewat **Perbarui analisis**. Syaratnya: YouTube terhubung, dan **YouTube Analytics API** aktif di project Google Cloud (lihat **Menghubungkan YouTube**, langkah 2).
+
+**Video yang dianalisis** hanya video buatan Nero:
+- yang diunggah lewat Nero;
+- yang Anda unggah sendiri, asalkan **judulnya sama persis** dengan judul buatan Nero untuk run itu. Tanda `<` dan `>` diabaikan.
+
+Video yang diunggah sendiri juga dicatat ke riwayat, supaya topiknya tidak diulang dan formatnya bergiliran. Bila dua run atau dua video berjudul sama, Nero tidak memasangkannya supaya tidak salah.
+
+**Angka yang dipakai:**
+- **Engaged 7 hari:** engaged views selama 7 hari pertama sejak video tayang, menurut YouTube Analytics. Dengan rentang yang sama, video lama dan baru bisa dibandingkan. Engaged views tidak menghitung putar ulang. Angka inilah yang dipakai untuk peringkat teratas/terbawah.
+- **Ditonton:** rata-rata detik (dan persen durasi) yang ditonton dalam 7 hari pertama.
+- **Views sekarang:** angka publik YouTube saat ini, termasuk putar ulang dan autoplay.
+- Data YouTube Analytics tertunda 48–72 jam dan memakai tanggal waktu Pasifik. Karena itu video baru tampil "belum ada data" atau "sementara" dulu, dan baru "7 hari lengkap" sekitar 10 hari setelah tayang.
+
+**Pelajaran (`data\channel\learnings.md`)** dipakai saat riset topik dan menulis naskah berikutnya. Isinya maksimal 15 poin: yang berhasil, yang kurang berhasil, dan saran. Ada dua syarat:
+- Minimal **5 video** yang data 7 hari pertamanya lengkap. Sebelum itu, berkasnya berisi "Data belum cukup" dan Nero tidak menebak pola.
+- **Izin Anda** untuk mengirim statistik ke AI (**Pengaturan channel → Analitik**, bawaan mati).
+  - Yang dikirim: nomor urut, judul/topik/format/hook buatan Nero, dan angka YouTube 7 hari pertama. ID video dan channel tidak dikirim.
+  - Paket gratis Gemini memakai isi prompt untuk mengembangkan produk Google, dan isinya bisa dibaca peninjau manusia. Pertimbangkan itu sebelum menyalakan izin.
+  - Setiap pola harus didukung minimal 2 video; poin yang tidak memenuhi syarat dibuang.
+
+**Laporan mingguan** dikirim ke Telegram sekali seminggu pada hari pilihan Anda (bawaan Senin). Isinya:
+- tren seluruh channel: 7 hari terakhir dibanding minggu sebelumnya;
+- 3 video teratas dan 3 terbawah menurut engaged views 7 hari pertama;
+- 3 poin pelajaran.
+
+Laporan dikirim oleh run harian sungguhan saat Channel Otomatis aktif. Bila hari itu terlewat (laptop mati), laporan dikirim di run berikutnya minggu itu. **Kirim laporan** di kartu Analitik mengirimnya kapan saja.
+
+**Privasi & data YouTube.**
+- Nero memakai YouTube API Services. Dengan memakainya, Anda terikat pada [Persyaratan Layanan YouTube](https://www.youtube.com/t/terms) dan [Kebijakan Privasi Google](https://policies.google.com/privacy).
+- Statistik channel Anda disimpan hanya di komputer ini (`data\channel\performance.json`), untuk video di jendela analisis, dan diperbarui tiap analisis. Judul dan teks lain dari YouTube tidak disimpan; judul yang tampil adalah catatan Nero.
+- Statistik dikirim ke luar hanya ke:
+  - Telegram milik Anda (laporan mingguan);
+  - penyedia AI, bila Anda mengizinkannya.
+- **Hapus data performa** di kartu Analitik (atau `analytics-clear`) menghapus angka dan pelajaran. Video dan data di YouTube tidak berubah. Catatan tanggal laporan mingguan tetap disimpan supaya laporan yang sama tidak terkirim dua kali.
+- **Putuskan** YouTube juga langsung menghapus data itu. Data yang izinnya tidak lagi berlaku (dicabut, atau tidak terbukti berlaku selama 30 hari) dihapus otomatis.
+- Izin Nero bisa dicabut kapan saja di [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+
+Baris perintah:
+
+```
+.venv\Scripts\python -m features.channel analyst
+.venv\Scripts\python -m features.channel weekly-report
+.venv\Scripts\python -m features.channel weekly-report --send
+.venv\Scripts\python -m features.channel analytics-clear
+```
+
+`analyst` memperbarui analisis dan menampilkan `learnings.md`. `weekly-report` menampilkan isi laporan; tambahkan `--send` untuk mengirimnya ke Telegram.
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |
@@ -365,6 +417,9 @@ Kiriman otomatis hanya berjalan bila Channel Otomatis **aktif** dan "Kirim paket
 | "Izin YouTube sudah tidak berlaku" | Tekan **Hubungkan ulang** di Pengaturan channel → YouTube. Bila terjadi tiap minggu, status aplikasi di Google Cloud masih **Testing**: buka Google Auth Platform → Audience → **Publish app**. |
 | "redirect_uri_mismatch" / "invalid_client" saat menghubungkan YouTube | Pastikan jenis client OAuth-nya **Desktop app** (bukan Web application), lalu salin ulang Client ID & secret. |
 | Telegram: "Bot belum boleh mengirim ke chat ini" / "chat not found" | Buka bot Anda di Telegram dan tekan **Start**, lalu **Cari chat ID** lagi dan simpan. |
+| Analitik: "YouTube Analytics API belum diaktifkan" | Di Google Cloud: **APIs & Services → Library → YouTube Analytics API → Enable** (project yang sama dengan client OAuth), lalu **Perbarui analisis**. |
+| Analitik: video yang saya unggah sendiri tidak muncul | Judul di YouTube harus sama persis dengan judul buatan Nero untuk run itu. Ubah judulnya di YouTube Studio, atau pakai **Unggah uji** dari Nero. |
+| Analitik: "Izin melihat statistik belum diberikan" | **Hubungkan ulang** YouTube dan centang semua izin, termasuk statistik. |
 | Telegram: "Cari chat ID" kosong | Kirim pesan apa saja ke bot (Telegram hanya menyimpannya 24 jam), lalu tekan lagi. |
 | "Model selalu berpikir panjang" | Model yang terpilih adalah versi *thinking*. Unduh versi **-instruct** lalu pilih di Pengaturan. |
 
