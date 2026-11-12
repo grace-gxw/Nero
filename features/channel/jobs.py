@@ -21,12 +21,14 @@ from .runctx import STEPS
 STEP_LABELS = {
     "research": "Riset topik", "script": "Menulis skrip", "qc": "Pemeriksaan fakta (QC)",
     "seo": "Judul & deskripsi", "tts": "Suara", "visuals": "Visual", "render": "Render video",
-    "publish_youtube": "Unggah ke YouTube",
+    "publish_youtube": "Unggah ke YouTube", "manual_pack": "Paket unggah manual", "notify": "Kirim ke Telegram",
 }
 # nama berkas hasil tiap langkah, untuk mengenali baris log "lewati <nama>: ..."
 _RESULT_NAME = {"research": "research", "script": "script", "qc": "qc", "seo": "metadata", "tts": "words",
-                "visuals": "visuals", "render": "render", "publish_youtube": "youtube"}
-MODES = ("plan", "video", "media", "upload")    # upload = unggah uji ke YouTube (private), bukan dry-run
+                "visuals": "visuals", "render": "render", "publish_youtube": "youtube", "manual_pack": "captions",
+                "notify": "telegram"}
+# upload = unggah uji ke YouTube (private); notify = kirim paket ke Telegram. Keduanya bukan dry-run.
+MODES = ("plan", "video", "media", "upload", "notify")
 LOG_LINES = 300
 _PREFIX = re.compile(r"^\[channel\]\s*(?:\d{2}:\d{2}:\d{2}\s+)?")
 
@@ -38,6 +40,8 @@ class JobBusy(RuntimeError):
 def steps_for(mode: str) -> list[str]:
     if mode == "upload":
         return ["publish_youtube"]
+    if mode == "notify":
+        return ["notify"]
     # uji coba: langkah upload hanya mencatat "tidak diunggah", jadi tidak ditampilkan
     return [s for s in pipeline.resolve_steps(mode) if s in pipeline.IMPLEMENTED and s not in pipeline.PUBLISH_STEPS]
 
@@ -73,6 +77,12 @@ class RunJob:
                 for step, name in _RESULT_NAME.items():
                     if name == m.group(1) and step in self.steps:
                         self.steps[step]["reused"] = True
+            m = re.match(r"(telegram \(kirim uji\)|youtube \(unggah uji\)) gagal: (.*)", text)
+            if m:                                   # tindakan pengguna yang tidak memakai penanda run
+                self.error = m.group(2)[:600]
+                step = "notify" if m.group(1).startswith("telegram") else "publish_youtube"
+                if step in self.steps:
+                    self.steps[step]["state"] = "gagal"
             m = re.match(r"(GAGAL|DIBATALKAN) di langkah (\w+)(?::\s*(.*))?", text)
             if m:
                 step = m.group(2)
@@ -99,6 +109,9 @@ class RunJob:
         try:
             if self.mode == "upload":
                 code = pipeline.upload_test(self.day, echo=self.echo, cancel=self.cancel,
+                                            on_progress=self.on_progress)
+            elif self.mode == "notify":
+                code = pipeline.notify_test(self.day, echo=self.echo, cancel=self.cancel,
                                             on_progress=self.on_progress)
             else:
                 code = pipeline.run_daily(self.day, dry_run=True, only=self.mode, force=self.force,

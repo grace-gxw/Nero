@@ -11,6 +11,9 @@ CLI Channel Otomatis (jalankan dari folder Nero):
   .venv\\Scripts\\python -m features.channel youtube-upload --date YYYY-MM-DD   unggah uji (private)
   .venv\\Scripts\\python -m features.channel youtube-check --date YYYY-MM-DD    cek ulang status video
   .venv\\Scripts\\python -m features.channel youtube-disconnect  cabut izin & hapus token
+  .venv\\Scripts\\python -m features.channel telegram-chats      chat yang baru menekan Start di bot
+  .venv\\Scripts\\python -m features.channel telegram-test       kirim pesan uji
+  .venv\\Scripts\\python -m features.channel telegram-send --date YYYY-MM-DD   kirim paket run ke Telegram
 
 --only: plan = riset s.d. SEO; media = suara, visual, render; video = plan + media; atau satu nama langkah.
 """
@@ -21,7 +24,7 @@ import json
 import sys
 from datetime import date
 
-from . import config, genres, llm, pipeline, youtube
+from . import config, genres, llm, pipeline, telegram, youtube
 from .runctx import STEPS, RunLocked
 from .schemas import Ping
 
@@ -130,6 +133,28 @@ def cmd_youtube_disconnect(_args) -> int:
     return 0
 
 
+def cmd_telegram_chats(_args) -> int:
+    me = telegram.get_me()
+    chats = telegram.find_chats()
+    print(f"Bot: @{me.get('username', '?')}")
+    if not chats:
+        print("Belum ada chat. Buka bot di Telegram, tekan Start (atau kirim pesan), lalu jalankan lagi.")
+        return 1
+    for c in chats:
+        print(f"{c['id']:>16}  {c['type']:<10}  {c['name']}")
+    return 0
+
+
+def cmd_telegram_test(_args) -> int:
+    telegram.send_text("<b>Nero terhubung</b>\nPesan uji dari Channel Otomatis (baris perintah).")
+    print("Pesan uji terkirim.")
+    return 0
+
+
+def cmd_telegram_send(args) -> int:
+    return pipeline.notify_test(date.fromisoformat(args.date))
+
+
 def main(argv=None) -> int:
     _utf8_console()
     ap = argparse.ArgumentParser(prog="python -m features.channel", description="Nero · Channel Otomatis")
@@ -164,13 +189,18 @@ def main(argv=None) -> int:
     c.set_defaults(func=cmd_youtube_check)
     sub.add_parser("youtube-disconnect", help="cabut izin YouTube & hapus token").set_defaults(
         func=cmd_youtube_disconnect)
+    sub.add_parser("telegram-chats", help="chat yang baru menekan Start di bot").set_defaults(func=cmd_telegram_chats)
+    sub.add_parser("telegram-test", help="kirim pesan uji ke Telegram").set_defaults(func=cmd_telegram_test)
+    t = sub.add_parser("telegram-send", help="kirim paket satu run ke Telegram")
+    t.add_argument("--date", required=True, help="tanggal run YYYY-MM-DD")
+    t.set_defaults(func=cmd_telegram_send)
     args = ap.parse_args(argv)
     try:
         return args.func(args)
     except (config.ConfigError, youtube.AuthError) as e:
         print(e, file=sys.stderr)
         return 2
-    except youtube.YouTubeError as e:
+    except (youtube.YouTubeError, telegram.TelegramError) as e:
         print(e, file=sys.stderr)
         return 1
     except OSError as e:

@@ -14,6 +14,9 @@ Nero · Channel Otomatis - rute /api/channel/* (didaftarkan app.py).
   POST /youtube/disconnect      cabut izin & hapus token
   POST /youtube/upload          {date, confirm: true} -> unggah uji (private) sebagai pekerjaan latar
   POST /youtube/check/<tanggal> cek ulang status video yang sudah diunggah
+  POST /telegram/chats          chat yang baru menekan Start di bot (untuk mengisi chat ID)
+  POST /telegram/test           kirim pesan uji
+  POST /telegram/send           {date} -> kirim paket run itu ke Telegram sebagai pekerjaan latar
 
 Selama settings.channel.enabled = false, fitur ini tidak menjalankan apa pun di latar belakang; halaman hanya
 menjalankan uji coba dan unggah uji (private) atas permintaan pengguna.
@@ -28,7 +31,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 import common
 
-from . import config, genres, jobs, runs, state, timeutil, youtube
+from . import config, genres, jobs, runs, state, telegram, timeutil, youtube
 from .config import ID, SETTINGS, ConfigError
 from .runctx import RunLocked
 
@@ -103,6 +106,8 @@ def _readiness(cfg: config.ChannelConfig, keys: dict[str, bool]) -> list[dict]:
         {"id": "music", "label": "Folder musik bebas royalti", "ok": bool(music) and os.path.isdir(music),
          "required": False},
         _youtube_ready(),
+        {"id": "telegram", "label": "Telegram (ringkasan & peringatan ke ponsel)",
+         "ok": keys.get("telegram_token", False) and keys.get("telegram_chat_id", False), "required": False},
     ]
 
 
@@ -126,7 +131,7 @@ def get_state():
         return jsonify(error=str(e)), 500
     return jsonify(job=job.snapshot() if job else None, runs=runs.list_runs(20),
                    today=timeutil.today_local(tz).isoformat(), enabled=enabled, niche=niche, ready=ready,
-                   youtube=youtube.status())
+                   youtube=youtube.status(), telegram={"configured": telegram.configured()})
 
 
 @bp.post("/run")
@@ -136,8 +141,8 @@ def post_run():
     from . import pipeline
     body = request.get_json(force=True, silent=True) or {}
     mode = str(body.get("mode") or "video")
-    if mode == "upload":
-        return jsonify(error="Unggah ke YouTube memakai tombol \"Unggah uji\" di hasil run."), 400
+    if mode in ("upload", "notify"):
+        return jsonify(error="Unggah ke YouTube dan kirim ke Telegram memakai tombolnya di hasil run."), 400
     genre = str(body.get("genre") or "") or None
     force = body.get("force") or []
     if not isinstance(force, list):
@@ -286,6 +291,49 @@ def post_youtube_check(day):
     if res is None:
         return jsonify(error="Video tanggal ini belum diunggah."), 404
     return jsonify(ok=True, youtube=res.model_dump(mode="json"))
+
+
+# --------------------------------------------------------------------------
+# Telegram
+# --------------------------------------------------------------------------
+@bp.post("/telegram/chats")
+def post_telegram_chats():
+    """Chat yang baru membuka bot dan menekan Start (24 jam terakhir), untuk mengisi chat ID."""
+    try:
+        me = telegram.get_me()
+        chats = telegram.find_chats()
+    except telegram.TelegramError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, bot=me.get("username", ""), chats=chats)
+
+
+@bp.post("/telegram/test")
+def post_telegram_test():
+    try:
+        telegram.send_text("<b>Nero terhubung</b>\nPesan uji dari Channel Otomatis. Paket harian dan peringatan "
+                           "kegagalan dikirim ke chat ini.")
+    except telegram.TelegramError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True)
+
+
+@bp.post("/telegram/send")
+def post_telegram_send():
+    """Kirim paket satu run ke Telegram atas perintah pengguna. Body: {date: YYYY-MM-DD}."""
+    body = request.get_json(force=True, silent=True) or {}
+    text = str(body.get("date") or "")
+    day = runs.parse_day(text) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text) else None
+    if day is None:
+        return jsonify(error="Tanggal harus berbentuk YYYY-MM-DD."), 400
+    if not telegram.configured():
+        return jsonify(error="Token bot / chat ID Telegram belum diisi. Atur di Pengaturan."), 400
+    try:
+        job = jobs.start(day, "notify")
+    except jobs.JobBusy as e:
+        return jsonify(error=str(e)), 409
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, job=job.snapshot())
 
 
 def start():

@@ -1168,8 +1168,9 @@ class PipelineMedia(ChannelSandbox):
         code, out, fake = self.go()
         self.assertEqual(code, 0, out)
         self.assertIn("run lama", out)
-        self.assertEqual(fake.names(), [])
-        self.assertIn("dijalankan: -", out)
+        self.assertEqual(fake.names(), [])                      # tanpa AI: semua hasil lama dipakai
+        # paket manual (Fase I-6) tidak ada di run lama: dibuat tanpa AI; langkah lain dipakai ulang
+        self.assertIn("dijalankan: manual_pack; dipakai ulang: research, script, qc, seo, tts, visuals, render", out)
 
     def test_narasi_terlalu_pendek_dipanjangkan(self):
         config.save_config({"video": {"target_seconds": [20, 30], "words_range": [10, 200]}})

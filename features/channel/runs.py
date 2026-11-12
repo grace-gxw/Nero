@@ -19,10 +19,10 @@ import common
 
 from . import config, state
 from .runctx import FINGERPRINTS, OUTPUTS, RunContext, lock_active, sha
-from .schemas import QC, Metadata, RenderInfo, Research, Script, Visuals, Words, YouTubeResult
+from .schemas import QC, Metadata, RenderInfo, Research, Script, TelegramSent, Visuals, Words, YouTubeResult
 
-STEP_ORDER = ("research", "script", "qc", "seo", "tts", "visuals", "render")
-SOURCED = ("seo", "tts", "visuals", "render")      # hasil yang dibuat dari naskah tertentu
+STEP_ORDER = ("research", "script", "qc", "seo", "tts", "visuals", "render", "manual_pack")
+SOURCED = ("seo", "tts", "visuals", "render", "manual_pack")      # hasil yang dibuat dari naskah tertentu
 RUN_FILES = ("final.mp4", "final.jpg", "voice.mp3", "captions.srt")   # boleh diambil halaman dari folder run
 LOG_TAIL_BYTES = 64 * 1024
 _FAIL = re.compile(r"^\d{2}:\d{2}:\d{2} (GAGAL|DIBATALKAN) di langkah (\w+)(?::\s*(.*))?$")
@@ -245,6 +245,8 @@ def run_detail(day: date) -> dict | None:
         "steps": step_states(ctx, summary["failed"], cur),
         "log": last_run_lines(ctx)[-80:],
         "youtube": current("youtube", YouTubeResult),
+        "pack": _pack(ctx, script),                      # caption TikTok & Instagram yang masih berlaku
+        "telegram": _telegram_sent(ctx, script),
         "youtube_stale": _youtube_stale(ctx, script),
         **_upload_fields(day, summary),
     }
@@ -258,6 +260,20 @@ def _upload_fields(day: date, summary: dict) -> dict:
     b = upload_block(day)
     return {"upload_ready": b["block"] == "", "upload_block": b["block"], "upload_rebuild": b["rebuild"],
             "upload_replan": b.get("replan", False), "run_genre": b["genre"]}
+
+
+def _pack(ctx: RunContext, script: Script | None) -> dict | None:
+    from . import pipeline
+    caps = pipeline.current_pack(ctx, script) if script is not None else None
+    return caps.model_dump(mode="json") if caps is not None else None
+
+
+def _telegram_sent(ctx: RunContext, script: Script | None) -> dict | None:
+    """Catatan kiriman Telegram harian, hanya bila untuk naskah sekarang."""
+    sent = ctx.load("telegram", TelegramSent)
+    if sent is None or script is None or sent.source != sha(script):
+        return None
+    return sent.model_dump(mode="json")
 
 
 def _youtube_stale(ctx: RunContext, script: Script | None) -> bool:

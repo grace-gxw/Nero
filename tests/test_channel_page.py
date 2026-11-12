@@ -185,7 +185,7 @@ class UjiCoba(PageSandbox):
         self.assertEqual(steps["research"], "dipakai")
         self.assertEqual(steps["script"], "selesai")
         self.assertEqual(steps["render"], "selesai")
-        self.assertEqual(list(steps), ["research", "script", "qc", "seo", "tts", "visuals", "render"])
+        self.assertEqual(list(steps), ["research", "script", "qc", "seo", "tts", "visuals", "render", "manual_pack"])
         self.assertIn("selesai. dijalankan", snap["log"][-1])
         self.assertFalse(snap["log"][0].startswith("[channel]"))
 
@@ -197,7 +197,7 @@ class UjiCoba(PageSandbox):
             st = self.get("/api/channel/state").get_json()
             self.assertEqual(st["job"]["status"], "proses")
             self.assertEqual(st["job"]["stage"], "Menulis skrip")
-            self.assertAlmostEqual(st["job"]["progress"], (1 + 0.5) / 4)
+            self.assertAlmostEqual(st["job"]["progress"], (1 + 0.5) / 5)     # 4 langkah rencana + paket manual
             self.assertEqual(app.app.test_client().get("/api/overview", base_url=BASE).get_json()
                              ["features"]["channel"]["busy"], 1)
             r = self.post("/api/channel/run", {"mode": "plan"})
@@ -522,9 +522,9 @@ class TandaLog(unittest.TestCase):
         job.on_progress("visuals", 0.0)
         job.on_progress("visuals", 0.5)
         snap = job.snapshot()
-        self.assertEqual([s["state"] for s in snap["steps"]], ["dipakai", "proses", "antri"])
+        self.assertEqual([s["state"] for s in snap["steps"]], ["dipakai", "proses", "antri", "antri"])
         self.assertEqual(snap["stage"], "Visual")
-        self.assertAlmostEqual(snap["progress"], 1.5 / 3)
+        self.assertAlmostEqual(snap["progress"], 1.5 / 4)                  # suara, visual, render, paket manual
         self.assertNotIn("reused", json.dumps(snap))
 
 

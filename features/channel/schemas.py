@@ -304,6 +304,22 @@ class YouTubeResult(_Model):
     strict_ok: bool = False          # pernah lolos cek ketat (privasi & jadwal sesuai permintaan)
 
 
+class Captions(_Model):
+    """captions.json: paket unggah manual TikTok & Instagram (manual_pack.py)."""
+    tiktok: str
+    instagram: str
+    hashtags: list[str] = Field(default_factory=list)
+    tiktok_ai_label: bool = False     # nyalakan "AI-generated content" saat mengunggah (ada gambar AI realistis)
+    instagram_ai_label: bool = True   # nyalakan "Add AI label" (narasi suara AI yang realistis)
+
+
+class TelegramSent(_Model):
+    """telegram.json: bagian paket yang sudah terkirim untuk naskah `source` (kiriman tidak diulang)."""
+    source: str = ""
+    sent: list[str] = Field(default_factory=list)
+    sent_at: str = ""
+
+
 class HistoryEntry(_Model):
     date: str
     topic: str

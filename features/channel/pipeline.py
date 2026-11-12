@@ -32,16 +32,34 @@ from datetime import date
 import common
 
 from . import cancel as cancelmod
-from . import config, genres, media, research, state, timeutil, writer, youtube
+from . import config, genres, manual_pack, media, research, state, telegram, timeutil, writer, youtube
 from .config import ChannelConfig, ConfigError
 from .runctx import DEPENDS, FINGERPRINTS, STEPS, RunContext, RunLocked, downstream, sha
-from .schemas import QC, HistoryEntry, Issue, Metadata, RenderInfo, Research, Script, Visuals, Words, YouTubeResult
+from .schemas import (
+    QC,
+    Captions,
+    HistoryEntry,
+    Issue,
+    Metadata,
+    RenderInfo,
+    Research,
+    Script,
+    TelegramSent,
+    Visuals,
+    Words,
+    YouTubeResult,
+)
 
 PLAN_STEPS = ("research", "script", "qc", "seo")
 MEDIA_STEPS = ("tts", "visuals", "render")
 PUBLISH_STEPS = ("publish_youtube",)
-IMPLEMENTED = {*PLAN_STEPS, *MEDIA_STEPS, *PUBLISH_STEPS}
-ALIASES = {"plan": PLAN_STEPS, "media": MEDIA_STEPS, "video": PLAN_STEPS + MEDIA_STEPS}
+PACK_STEPS = ("manual_pack",)
+NOTIFY_STEPS = ("notify",)
+IMPLEMENTED = {*PLAN_STEPS, *MEDIA_STEPS, *PUBLISH_STEPS, *PACK_STEPS, *NOTIFY_STEPS}
+# notify hanya ikut run lengkap (tanpa --only): uji coba dari halaman tidak mengirim ke Telegram
+ALIASES = {"plan": PLAN_STEPS + PACK_STEPS, "media": MEDIA_STEPS + PACK_STEPS,
+           "video": PLAN_STEPS + MEDIA_STEPS + PACK_STEPS}
+PACK_TXT = ("tiktok_caption.txt", "instagram_caption.txt")
 PUBLISHED = ("final.mp4", "final.jpg", "captions.srt")    # disalin ke output/channel/<tanggal>/
 
 EXIT_OK, EXIT_FAILED, EXIT_CONFIG, EXIT_LOCKED = 0, 1, 2, 3
@@ -65,6 +83,7 @@ class Run:
     on_progress: Callable[[str, float], None] | None = None
     step: str = ""
     genre: str = ""                  # genre khusus run ini (--genre), dicatat di inputs.json
+    alerts: bool = False             # kegagalan dikirim ke Telegram (hanya run harian sungguhan)
 
     def log(self, msg: str) -> None:
         self.ctx.log(msg)
@@ -152,9 +171,9 @@ def _output_dir(run: Run) -> str:
     return os.path.join(common.output_dir(config.ID), run.ctx.day.isoformat())
 
 
-def _unpublish(run: Run) -> None:
-    """Tarik salinan video di folder hasil (video lama tidak boleh tertinggal untuk diunggah)."""
-    for name in PUBLISHED:
+def _unpublish(run: Run, names: tuple[str, ...] = PUBLISHED) -> None:
+    """Tarik salinan di folder hasil (video/caption lama tidak boleh tertinggal untuk diunggah)."""
+    for name in names:
         path = os.path.join(_output_dir(run), name)
         try:
             state.remove_retry(path, 20.0 if name.endswith(".mp4") else 2.0)
@@ -168,6 +187,8 @@ def _begin(run: Run, step: str) -> None:
     langkah ini (langkah yang gagal di tengah jalan tidak meninggalkan hasil lama yang tampak valid)."""
     if "render" in (step, *downstream(step)):
         _unpublish(run)
+    if step in (*PLAN_STEPS, "tts", "visuals", *PACK_STEPS):
+        _unpublish(run, PACK_TXT)       # caption bergantung pada naskah, judul, dan visual; dibuat lagi oleh manual_pack
     run.ctx.invalidate(step)
 
 
@@ -311,6 +332,7 @@ def _rewrite_length(run: Run, script: Script, *, seconds: float, goal: float, lo
     res = _need(run, "research", Research, "tts")
     media.check_cancel(run.cancel)
     run.ctx.invalidate("qc")                 # skrip akan berubah: QC lama tidak berlaku lagi
+    _unpublish(run, PACK_TXT)                # caption naskah lama tidak boleh tertinggal di folder hasil
     new = writer.write_script(run.cfg, res, script.format, settings=run.settings, learnings=state.load_learnings(),
                               recent_hooks=state.last_hooks(5), issues=[issue], previous=script, log=run.log)
     run.ctx.save("script", new)
@@ -411,12 +433,12 @@ def step_visuals(run: Run, force: bool) -> bool:
     return True
 
 
-def _publish_local(run: Run) -> str:
+def _publish_local(run: Run, names: tuple[str, ...] = PUBLISHED) -> str:
     """Salin hasil ke output/channel/<tanggal>/ supaya tombol "Folder hasil" di Nero bekerja. Atomik dan
     idempoten: berkas yang sudah sama dilewati. Gagal menyalin tidak menggagalkan run (dicoba lagi run berikutnya)."""
     out = _output_dir(run)
     os.makedirs(out, exist_ok=True)
-    for name in PUBLISHED:
+    for name in names:
         src, dst = run.ctx.path(name), os.path.join(out, name)
         if not os.path.isfile(src):
             continue
@@ -428,7 +450,8 @@ def _publish_local(run: Run) -> str:
             shutil.copy2(src, tmp)
             state.replace_retry(tmp, dst)
         except OSError as e:
-            run.log(f"render: PERINGATAN {name} belum bisa disalin ke folder hasil ({e.strerror}); dicoba lagi nanti")
+            run.log(f"{run.step}: PERINGATAN {name} belum bisa disalin ke folder hasil ({e.strerror}); dicoba lagi "
+                    "nanti")
             if os.path.exists(tmp):
                 os.remove(tmp)
     return out
@@ -631,9 +654,156 @@ def step_publish_youtube(run: Run, force: bool) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------
+# Paket manual & Telegram (Fase I-6)
+# --------------------------------------------------------------------------
+def _current(run: Run, name: str, schema, step: str, script: Script):
+    """Hasil langkah `step` bila milik naskah sekarang (<step>_src), selain itu None."""
+    if run.ctx.fingerprint(f"{step}_src") != sha(script):
+        return None
+    return run.ctx.load(name, schema)
+
+
+def _pack_inputs(ctx: RunContext, script: Script) -> tuple[Metadata | None, bool]:
+    """(metadata naskah ini, video memakai gambar AI). Gambar AI dari visual sebenarnya bila sudah dibuat untuk
+    naskah ini, selain itu dari rencana."""
+    src = sha(script)
+    meta = ctx.load("metadata", Metadata) if ctx.fingerprint("seo_src") == src else None
+    vis = ctx.load("visuals", Visuals) if ctx.fingerprint("visuals_src") == src else None
+    return meta, vis.uses_ai_images if vis is not None else writer.planned_visuals(script)[1]
+
+
+def current_pack(ctx: RunContext, script: Script) -> Captions | None:
+    """Caption yang dibuat dari judul/visual sekarang (bukan sekadar milik naskah ini), selain itu None."""
+    meta, uses_ai = _pack_inputs(ctx, script)
+    if meta is None or ctx.fingerprint("manual_pack_src") != sha(script) or \
+            ctx.fingerprint("manual_pack") != sha(meta, uses_ai):
+        return None
+    return ctx.load("captions", Captions)
+
+
+def _video_current(run: Run, script: Script) -> RenderInfo | None:
+    """render.json bila final.mp4 sah dan merupakan render terbaru dari suara & visual naskah ini (pemeriksaan yang
+    sama dengan syarat unggah), selain itu None."""
+    info = run.ctx.load("render", RenderInfo)
+    if info is None or not info.valid or not _files_exist(run, "final.mp4"):
+        return None
+    fps = run.ctx.fingerprints()
+    src = sha(script)
+    if not all(fps.get(f"{s}_src") == src for s in ("tts", "visuals", "render")):
+        return None
+    words, vis = run.ctx.load("words", Words), run.ctx.load("visuals", Visuals)
+    if words is None or vis is None:
+        return None
+    ok = (fps.get("render_media") == sha(words, vis) if fps.get("render_media")
+          else fps.get("render") == fp_render(words, vis, run.cfg, run.ctx.day))
+    return info if ok else None
+
+
+def step_manual_pack(run: Run, force: bool) -> bool:
+    """Caption TikTok & Instagram (selalu diunggah manual) dari judul/ringkasan/hashtag naskah sekarang."""
+    script = _passed_qc(run, "manual_pack")
+    meta, uses_ai = _pack_inputs(run.ctx, script)
+    if meta is None:
+        raise StepError("manual_pack", "Judul & deskripsi belum dibuat untuk naskah ini; jalankan langkah seo.")
+    fp = sha(meta, uses_ai)
+    if not force and _reuse(run, "manual_pack", "captions", Captions, fp, lambda c: _files_exist(run, *PACK_TXT)):
+        _mark_src(run, "manual_pack", script)
+        _publish_local(run, PACK_TXT)
+        return False
+    _begin(run, "manual_pack")
+    caps = manual_pack.build(meta, uses_ai=uses_ai, topic=script.topic)
+    run.ctx.save("captions", caps)
+    state.write_text_atomic(run.ctx.path("tiktok_caption.txt"), caps.tiktok + "\n")
+    state.write_text_atomic(run.ctx.path("instagram_caption.txt"), caps.instagram + "\n")
+    run.ctx.set_fingerprint("manual_pack", fp)
+    run.ctx.set_fingerprint("manual_pack_src", sha(script))
+    _publish_local(run, PACK_TXT)
+    run.log("paket manual: caption TikTok & Instagram siap")
+    return True
+
+
+def _notify_items(run: Run) -> list:
+    """Isi kiriman Telegram dari hasil run yang milik naskah sekarang (yang usang tidak ikut dikirim)."""
+    script = _need(run, "script", Script, "notify")
+    src = sha(script)
+    found = run.ctx.load("research", Research)
+    qc = run.ctx.load("qc", QC)
+    if qc is not None and (found is None or run.ctx.fingerprint("qc") != fp_qc(script, found, run.cfg)):
+        qc = None                                   # QC milik naskah/pengaturan lain
+    info = _video_current(run, script)
+    yt = run.ctx.load("youtube", YouTubeResult)
+    stale_yt = bool(yt is not None and yt.video_id and yt.source and yt.source != src)
+    meta, _ = _pack_inputs(run.ctx, script)
+    return telegram.compose_run(
+        day=run.ctx.day.isoformat(), script=script, meta=meta, qc=qc, render=info,
+        youtube=None if stale_yt else yt, youtube_stale=stale_yt, captions=current_pack(run.ctx, script),
+        video=run.ctx.path("final.mp4") if info is not None else "", approval=run.cfg.approval.mode,
+        topic=script.topic)
+
+
+def step_notify(run: Run, force: bool) -> bool:
+    """Kirim paket harian ke Telegram (SPEC 6.11). Uji coba hanya mencatat isinya. Bagian yang sudah terkirim untuk
+    naskah ini tidak dikirim lagi (kiriman yang terputus dilanjutkan); --force mengirim ulang semuanya."""
+    if not run.cfg.notify.telegram:
+        run.log("telegram: kiriman dimatikan (notify.telegram = false)")
+        return False
+    items = _notify_items(run)
+    if run.dry_run:
+        run.log(f"telegram (uji coba): {len(items)} pesan tidak dikirim (" + ", ".join(i.kind for i in items) + ")")
+        run.log("telegram (uji coba) ringkasan: " + telegram.plain(items[0].text).replace("\n", " | "))
+        return False
+    if not telegram.configured(run.settings):
+        run.log("telegram: PERINGATAN token bot / chat ID belum diisi; paket tidak dikirim")
+        return False
+    src = sha(_need(run, "script", Script, "notify"))
+    old = run.ctx.load("telegram", TelegramSent)
+    done = set(old.sent) if old is not None and old.source == src and not force else set()
+    if {i.kind for i in items} <= done:
+        run.log("lewati telegram: paket naskah ini sudah dikirim")
+        return False
+    record = TelegramSent(source=src, sent=sorted(done))
+
+    def sent(kind: str) -> None:
+        record.sent.append(kind)
+        run.ctx.save("telegram", record)
+
+    try:
+        telegram.send_items(items, settings=run.settings, done=done, on_sent=sent, cancel=run.cancel,
+                            progress=run.progress, log=run.log)
+    except telegram.TelegramError as e:
+        raise StepError("notify", str(e)) from None
+    record.sent_at = timeutil.now_local(run.cfg.schedule.timezone).isoformat(timespec="seconds")
+    run.ctx.save("telegram", record)
+    run.log(f"telegram: paket terkirim ({len(items)} pesan)")
+    return True
+
+
+def _alert(run: Run, step: str, error: str) -> None:
+    """SPEC 6.11: kegagalan run harian dikirim ke Telegram (nama langkah + 30 baris log terakhir). Hanya run
+    sungguhan; galat saat mengirim peringatan hanya dicatat."""
+    if not run.alerts:
+        if run.dry_run:
+            run.log("telegram (uji coba): peringatan kegagalan tidak dikirim")
+        return
+    if not run.cfg.notify.telegram:
+        return
+    if not telegram.configured(run.settings):
+        run.log("telegram: token bot / chat ID belum diisi; peringatan kegagalan tidak dikirim")
+        return
+    from .runs import last_run_lines
+    try:
+        telegram.send_items(telegram.alert_items(day=run.ctx.day.isoformat(), step=step, error=error,
+                                                 log_lines=last_run_lines(run.ctx)),
+                            settings=run.settings, log=run.log)
+        run.log("telegram: peringatan kegagalan terkirim")
+    except Exception as e:  # noqa: BLE001  peringatan yang gagal tidak boleh menutupi kegagalan aslinya
+        run.log(f"telegram: peringatan kegagalan tidak terkirim ({e})")
+
+
 STEP_FUNCS = {"research": step_research, "script": step_script, "qc": step_qc, "seo": step_seo,
               "tts": step_tts, "visuals": step_visuals, "render": step_render,
-              "publish_youtube": step_publish_youtube}
+              "publish_youtube": step_publish_youtube, "manual_pack": step_manual_pack, "notify": step_notify}
 
 
 # --------------------------------------------------------------------------
@@ -748,7 +918,8 @@ def run_daily(day: date | None = None, *, dry_run: bool = False, force: list[str
     today = timeutil.today_local(cfg.schedule.timezone)
     day = day or today
     ctx = RunContext(day, echo=echo)
-    run = Run(ctx, cfg, settings, dry_run, cancel=cancel, on_progress=on_progress, genre=genre or "")
+    run = Run(ctx, cfg, settings, dry_run, cancel=cancel, on_progress=on_progress, genre=genre or "",
+              alerts=not dry_run)
     try:
         ctx.acquire()
     except RunLocked as e:
@@ -782,7 +953,7 @@ def _guarded(run: Run, body: Callable[[], None]) -> int:
         run.log(f"GAGAL di langkah {getattr(e, 'step', None) or run.step}: {e}")
         with open(run.ctx.path("run.log"), "a", encoding="utf-8") as f:
             f.write(traceback.format_exc())
-        # alert Telegram (nama langkah + 30 baris log terakhir) ditambahkan di Fase I-6
+        _alert(run, getattr(e, "step", None) or run.step, str(e))
         return EXIT_FAILED
     finally:
         run.ctx.release()
@@ -824,9 +995,28 @@ def upload_test(day: date, *, echo=print, cancel: threading.Event | None = None,
             _publish(run, test=True)
             did = "publish_youtube; dipakai ulang: -"
         run.progress(1.0)
-        run.log(f"selesai. dijalankan: {did} (unggah uji)")     # penanda selesai yang sama dengan run biasa
+        if markers:
+            run.log(f"selesai. dijalankan: {did} (unggah uji)")     # menghapus tanda gagal upload sebelumnya
+        else:
+            run.log("youtube (unggah uji): selesai")              # kegagalan langkah lain tetap tampil
 
-    return _guarded(run, body)
+    from .runs import failure
+    # penanda run hanya dipakai bila tidak menutupi kegagalan langkah lain (mis. kiriman Telegram harian)
+    markers = (failure(ctx) or {}).get("step") in (None, "publish_youtube")
+    if markers:
+        return _guarded(run, body)
+    try:
+        with cancelmod.cancel_scope(cancel):
+            body()
+        return EXIT_OK
+    except media.Cancelled:
+        run.log("youtube (unggah uji): dibatalkan")
+        return EXIT_FAILED
+    except Exception as e:  # noqa: BLE001  dilaporkan ke halaman/CLI tanpa menimpa tanda gagal run
+        run.log(f"youtube (unggah uji) gagal: {e}")
+        return EXIT_FAILED
+    finally:
+        ctx.release()
 
 
 def recheck_upload(day: date) -> YouTubeResult | None:
@@ -896,3 +1086,59 @@ def upload_block(day: date) -> dict:
     except (ConfigError, StepError) as e:
         return {**out, "block": str(e)}
     return out
+
+
+def notify_test(day: date, *, echo=print, cancel: threading.Event | None = None,
+                on_progress: Callable[[str, float], None] | None = None) -> int:
+    """Kirim paket run `day` ke Telegram atas perintah pengguna (tombol di halaman atau CLI), walau channel masih
+    nonaktif. Selalu mengirim ulang semuanya; tidak mengubah catatan kiriman harian."""
+    settings = common.load_settings()
+    ctx = RunContext(day, echo=echo)
+    try:
+        try:
+            cfg = run_config(ctx, settings)            # genre khusus run ini (--genre) ikut menentukan sidik QC
+        except ConfigError:
+            cfg = config.load_config(settings)
+    except ConfigError as e:
+        echo(f"[channel] {e}")
+        return EXIT_CONFIG
+    if not os.path.isfile(ctx.path("script.json")):
+        echo(f"[channel] Run {day.isoformat()} belum punya naskah.")
+        return EXIT_CONFIG
+    if not telegram.configured(settings):
+        echo("[channel] Token bot / chat ID Telegram belum diisi.")
+        return EXIT_CONFIG
+    run = Run(ctx, cfg, settings, dry_run=False, cancel=cancel, on_progress=on_progress)
+    try:
+        ctx.acquire()
+    except RunLocked as e:
+        echo(f"[channel] {e}")
+        return EXIT_LOCKED
+    run.step = "notify"
+    # Kiriman atas perintah pengguna tidak memakai penanda run ("GAGAL di langkah"/"selesai. dijalankan"), supaya
+    # status run harian di halaman tidak berubah; hasilnya dilaporkan lewat pekerjaan halaman / CLI.
+    from .runs import failure
+    try:
+        with cancelmod.cancel_scope(cancel):
+            run.progress(0.0)
+            items = _notify_items(run)
+            run.log(f"telegram (kirim uji): mulai, {len(items)} pesan")
+            telegram.send_items(items, settings=settings, cancel=cancel, progress=run.progress, log=run.log)
+            run.progress(1.0)
+        run.log("telegram (kirim uji): selesai")
+        if (failure(ctx) or {}).get("step") == "notify":
+            # kiriman harian yang tadinya gagal kini sudah sampai: dicatat terkirim (run berikutnya tidak mengirim
+            # ulang) dan tanda gagalnya dihapus
+            run.ctx.save("telegram", TelegramSent(
+                source=sha(_need(run, "script", Script, "notify")), sent=sorted(i.kind for i in items),
+                sent_at=timeutil.now_local(cfg.schedule.timezone).isoformat(timespec="seconds")))
+            ctx.log("selesai. dijalankan: -; dipakai ulang: notify (kirim uji ke Telegram)")
+        return EXIT_OK
+    except media.Cancelled:
+        run.log("telegram (kirim uji): dibatalkan")
+        return EXIT_FAILED
+    except Exception as e:  # noqa: BLE001  dilaporkan ke halaman/CLI tanpa menandai run gagal
+        run.log(f"telegram (kirim uji) gagal: {e}")
+        return EXIT_FAILED
+    finally:
+        ctx.release()

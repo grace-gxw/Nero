@@ -36,7 +36,8 @@ OUTPUTS = {"research": ("research.json",), "script": ("script.json",), "qc": ("q
            "seo": ("metadata.json",), "tts": ("words.json", "voice.wav", "voice.mp3"),
            "visuals": ("visuals.json",),
            # berkas media lebih dulu: bila video sedang diputar, render.json lama tetap utuh (tidak setengah)
-           "render": ("final.mp4", "final.jpg", "captions.srt", "base.mkv", "render.json")}
+           "render": ("final.mp4", "final.jpg", "captions.srt", "base.mkv", "render.json"),
+           "manual_pack": ("captions.json", "tiktok_caption.txt", "instagram_caption.txt")}
 MEDIA_FILES = (".mp4", ".mkv", ".jpg", ".mp3", ".wav", ".srt")
 MEDIA_BUSY_SECONDS = 20     # pemutar video bisa menahan berkas ±15 dtk setelah dijeda
 FINGERPRINTS = "inputs.json"
