@@ -14,6 +14,9 @@ CLI Channel Otomatis (jalankan dari folder Nero):
   .venv\\Scripts\\python -m features.channel telegram-chats      chat yang baru menekan Start di bot
   .venv\\Scripts\\python -m features.channel telegram-test       kirim pesan uji
   .venv\\Scripts\\python -m features.channel telegram-send --date YYYY-MM-DD   kirim paket run ke Telegram
+  .venv\\Scripts\\python -m features.channel analyst [--cached]  perbarui analisis performa & learnings.md
+  .venv\\Scripts\\python -m features.channel weekly-report [--send] tampilkan / kirim laporan mingguan
+  .venv\\Scripts\\python -m features.channel analytics-clear     hapus data performa yang disimpan Nero
 
 --only: plan = riset s.d. SEO; media = suara, visual, render; video = plan + media; atau satu nama langkah.
 """
@@ -24,7 +27,7 @@ import json
 import sys
 from datetime import date
 
-from . import config, genres, llm, pipeline, telegram, youtube
+from . import analyst, config, genres, llm, pipeline, state, telegram, timeutil, youtube
 from .runctx import STEPS, RunLocked
 from .schemas import Ping
 
@@ -155,6 +158,39 @@ def cmd_telegram_send(args) -> int:
     return pipeline.notify_test(date.fromisoformat(args.date))
 
 
+def cmd_analyst(args) -> int:
+    code = pipeline.analyze_now(force=not args.cached)
+    if code == 0:
+        print()
+        print(state.load_learnings().strip() or "(learnings.md kosong)")
+    return code
+
+
+def cmd_weekly_report(args) -> int:
+    if args.send:
+        return pipeline.weekly_report_now()
+    perf = analyst.load()
+    if perf is None:
+        print("Belum ada data performa. Jalankan dulu: python -m features.channel analyst", file=sys.stderr)
+        return 1
+    print(telegram.plain(analyst.weekly_text(perf)))
+    cfg = config.load_config()
+    today = timeutil.today_local(cfg.schedule.timezone)
+    print()
+    print(f"Laporan minggu ini ({analyst.weekly_key(cfg, today)}): "
+          + ("belum terkirim" if analyst.weekly_due(cfg, today) else "sudah terkirim/ditangani"))
+    return 0
+
+
+def cmd_analytics_clear(_args) -> int:
+    if analyst.running():
+        print("Analisis performa sedang berjalan. Tunggu selesai dulu.", file=sys.stderr)
+        return 3
+    n = state.clear_performance()
+    print(f"{n} berkas data performa dihapus dari Nero. Video dan data di YouTube tidak berubah.")
+    return 0
+
+
 def main(argv=None) -> int:
     _utf8_console()
     ap = argparse.ArgumentParser(prog="python -m features.channel", description="Nero · Channel Otomatis")
@@ -194,6 +230,14 @@ def main(argv=None) -> int:
     t = sub.add_parser("telegram-send", help="kirim paket satu run ke Telegram")
     t.add_argument("--date", required=True, help="tanggal run YYYY-MM-DD")
     t.set_defaults(func=cmd_telegram_send)
+    a = sub.add_parser("analyst", help="perbarui analisis performa video & learnings.md")
+    a.add_argument("--cached", action="store_true", help="pakai hasil hari ini bila sudah ada")
+    a.set_defaults(func=cmd_analyst)
+    w = sub.add_parser("weekly-report", help="tampilkan laporan mingguan (--send: kirim ke Telegram)")
+    w.add_argument("--send", action="store_true", help="kirim ke Telegram sekarang")
+    w.set_defaults(func=cmd_weekly_report)
+    sub.add_parser("analytics-clear", help="hapus data performa yang disimpan Nero").set_defaults(
+        func=cmd_analytics_clear)
     args = ap.parse_args(argv)
     try:
         return args.func(args)

@@ -16,8 +16,8 @@ Checkpoint (lihat juga runctx.py):
   `--force qc` yang menghasilkan skrip yang sama tidak membuat ulang suara dan gambar AI.
 
 Fase I-2: research, script, qc, seo. Fase I-3: tts, visuals, render. Fase I-5: publish_youtube (hanya run
-sungguhan dengan youtube.api_upload = true; unggah uji lewat upload_test). Langkah lain menyusul (lihat
-INTEGRATION_PLAN.md) dan dilewati sampai tersedia.
+sungguhan dengan youtube.api_upload = true; unggah uji lewat upload_test). Fase I-6: manual_pack, notify.
+Fase I-7: analyst (paling awal, tidak pernah menggagalkan run; laporan mingguan) dan state_update (riwayat).
 """
 from __future__ import annotations
 
@@ -31,10 +31,10 @@ from datetime import date
 
 import common
 
+from . import analyst, config, genres, manual_pack, media, research, state, telegram, timeutil, writer, youtube
 from . import cancel as cancelmod
-from . import config, genres, manual_pack, media, research, state, telegram, timeutil, writer, youtube
 from .config import ChannelConfig, ConfigError
-from .runctx import DEPENDS, FINGERPRINTS, STEPS, RunContext, RunLocked, downstream, sha
+from .runctx import DEPENDS, FINGERPRINTS, STEPS, RunContext, RunLocked, downstream, lock_active, sha
 from .schemas import (
     QC,
     Captions,
@@ -55,7 +55,8 @@ MEDIA_STEPS = ("tts", "visuals", "render")
 PUBLISH_STEPS = ("publish_youtube",)
 PACK_STEPS = ("manual_pack",)
 NOTIFY_STEPS = ("notify",)
-IMPLEMENTED = {*PLAN_STEPS, *MEDIA_STEPS, *PUBLISH_STEPS, *PACK_STEPS, *NOTIFY_STEPS}
+STATE_STEPS = ("analyst", "state_update")
+IMPLEMENTED = {*PLAN_STEPS, *MEDIA_STEPS, *PUBLISH_STEPS, *PACK_STEPS, *NOTIFY_STEPS, *STATE_STEPS}
 # notify hanya ikut run lengkap (tanpa --only): uji coba dari halaman tidak mengirim ke Telegram
 ALIASES = {"plan": PLAN_STEPS + PACK_STEPS, "media": MEDIA_STEPS + PACK_STEPS,
            "video": PLAN_STEPS + MEDIA_STEPS + PACK_STEPS}
@@ -224,7 +225,7 @@ def step_research(run: Run, force: bool) -> bool:
         return False
     old = run.ctx.load("research", Research)        # riset diulang = minta topik baru, bukan topik yang sama
     _begin(run, "research")
-    res = research.run(run.cfg, run.ctx.day, settings=run.settings, learnings=state.load_learnings(),
+    res = research.run(run.cfg, run.ctx.day, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
                        avoid_topics=[old.chosen.topic] if old else [], log=run.log)
     run.ctx.save("research", res)
     run.ctx.set_fingerprint("research", fp)
@@ -243,7 +244,7 @@ def step_script(run: Run, force: bool) -> bool:
     _begin(run, "script")
     fmt = _format(run)
     run.log(f"skrip: format {fmt}")
-    script = writer.write_script(run.cfg, res, fmt, settings=run.settings, learnings=state.load_learnings(),
+    script = writer.write_script(run.cfg, res, fmt, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
                                  recent_hooks=state.last_hooks(5), log=run.log)
     run.ctx.save("script", script)
     run.ctx.set_fingerprint("script", fp)
@@ -267,7 +268,7 @@ def step_qc(run: Run, force: bool) -> bool:
             return False
     _begin(run, "qc")
     script, qc = writer.write_and_review(
-        run.cfg, res, script.format, script=script, settings=run.settings, learnings=state.load_learnings(),
+        run.cfg, res, script.format, script=script, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
         recent_topics=state.recent_topics(research.HISTORY_DAYS, run.ctx.day), recent_hooks=state.last_hooks(5),
         on_script=lambda s: run.ctx.save("script", s), log=run.log)
     _save_review(run, res, script, qc)
@@ -333,12 +334,12 @@ def _rewrite_length(run: Run, script: Script, *, seconds: float, goal: float, lo
     media.check_cancel(run.cancel)
     run.ctx.invalidate("qc")                 # skrip akan berubah: QC lama tidak berlaku lagi
     _unpublish(run, PACK_TXT)                # caption naskah lama tidak boleh tertinggal di folder hasil
-    new = writer.write_script(run.cfg, res, script.format, settings=run.settings, learnings=state.load_learnings(),
+    new = writer.write_script(run.cfg, res, script.format, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
                               recent_hooks=state.last_hooks(5), issues=[issue], previous=script, log=run.log)
     run.ctx.save("script", new)
     media.check_cancel(run.cancel)
     new, qc = writer.write_and_review(
-        run.cfg, res, script.format, script=new, settings=run.settings, learnings=state.load_learnings(),
+        run.cfg, res, script.format, script=new, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
         recent_topics=state.recent_topics(research.HISTORY_DAYS, run.ctx.day), recent_hooks=state.last_hooks(5),
         on_script=lambda s: run.ctx.save("script", s), log=run.log)
     _save_review(run, res, new, qc)
@@ -507,6 +508,17 @@ class UploadBlocked(StepError):
         self.rebuild = rebuild
 
 
+def _manual_upload(run: Run) -> str:
+    """ID video yang diunggah sendiri oleh pengguna untuk tanggal run ini (dikenali analis dari judulnya, tercatat di
+    riwayat) bila run ini belum punya youtube.json; selain itu "". Penjaga "tidak pernah upload dua kali" untuk
+    video yang tidak diunggah lewat Nero."""
+    yt = run.ctx.load("youtube", YouTubeResult)
+    if (yt is not None and yt.video_id) or os.path.exists(run.ctx.path(youtube.SESSION_FILE)):
+        return ""                # sudah tercatat, atau upload Nero yang terputus: pemulihan upload yang menanganinya
+    day = run.ctx.day.isoformat()
+    return next((e.video_id for e in state.load_history() if e.date == day and e.video_id), "")
+
+
 def _upload_ready(run: Run, step: str) -> tuple[Script, Metadata, RenderInfo, Visuals]:
     """Syarat upload (SPEC bagian 8: tidak pernah upload bila QC atau validasi render gagal):
     - QC lulus untuk naskah dan pengaturan sekarang;
@@ -517,6 +529,9 @@ def _upload_ready(run: Run, step: str) -> tuple[Script, Metadata, RenderInfo, Vi
     def stop(msg: str, rebuild: bool = True):
         raise UploadBlocked(msg + (" " + AGAIN if rebuild else ""), rebuild)
 
+    manual = _manual_upload(run)
+    if manual:
+        stop(f"Video run ini sudah ada di YouTube (diunggah sendiri: {manual}); tidak diunggah lagi.", rebuild=False)
     script = run.ctx.load("script", Script)
     res = run.ctx.load("research", Research)
     qc = run.ctx.load("qc", QC)
@@ -639,6 +654,10 @@ def step_publish_youtube(run: Run, force: bool) -> bool:
         return False
     if run.dry_run:
         run.log("youtube: uji coba, video tidak diunggah")
+        return False
+    manual = _manual_upload(run)
+    if manual:
+        run.log(f"lewati youtube: video tanggal ini sudah diunggah sendiri ({manual}); tidak pernah diunggah dua kali")
         return False
     if not run.cfg.youtube.api_upload:
         run.log("youtube: upload lewat API nonaktif (youtube.api_upload = false); unggah manual memakai paket di "
@@ -801,9 +820,105 @@ def _alert(run: Run, step: str, error: str) -> None:
         run.log(f"telegram: peringatan kegagalan tidak terkirim ({e})")
 
 
-STEP_FUNCS = {"research": step_research, "script": step_script, "qc": step_qc, "seo": step_seo,
-              "tts": step_tts, "visuals": step_visuals, "render": step_render,
-              "publish_youtube": step_publish_youtube, "manual_pack": step_manual_pack, "notify": step_notify}
+# --------------------------------------------------------------------------
+# Analis & riwayat (Fase I-7)
+# --------------------------------------------------------------------------
+def _record_found(found: analyst.Found) -> None:
+    """Video yang diunggah sendiri oleh pengguna (dikenali analis dari judulnya) masuk riwayat, seperti video yang
+    diunggah lewat Nero: dedupe topik 60 hari, rotasi format & hook, dan klip stok yang tidak dipakai ulang."""
+    day = date.fromisoformat(found.day)
+    ctx = RunContext(day, echo=None)
+    if any(e.video_id == found.video_id for e in state.load_history()):
+        return
+    if lock_active(ctx.path(".lock")):
+        raise OSError(f"run {found.day} sedang berjalan; dicatat di analisis berikutnya")
+    script, meta = ctx.load("script", Script), ctx.load("metadata", Metadata)
+    if script is None or meta is None or analyst.norm_title(meta.title) != analyst.norm_title(found.title):
+        return
+    found_res = ctx.load("research", Research)
+    qc, info = ctx.load("qc", QC), ctx.load("render", RenderInfo)
+    src = sha(script)
+    vis = ctx.load("visuals", Visuals) if ctx.fingerprint("visuals_src") == src else None
+    state.upsert_history(HistoryEntry(
+        date=found.day, topic=found_res.chosen.topic if found_res else script.topic, title=meta.title,
+        format=script.format, hook=script.hook, video_id=found.video_id,
+        clip_ids=vis.clip_ids if vis is not None else [], qc_score=qc.score if qc else 0,
+        duration=round(info.duration, 2) if info and ctx.fingerprint("render_src") == src else 0))
+
+
+def _weekly_report(run: Run, perf) -> None:
+    """Laporan mingguan ke Telegram (SPEC 6.2) di run sungguhan pertama sejak hari laporan. Gagal = dicoba lagi di
+    run berikutnya; tidak pernah menggagalkan run harian."""
+    today = timeutil.today_local(run.cfg.schedule.timezone)
+    if not analyst.weekly_due(run.cfg, today):
+        return
+    if perf is None or not perf.day:
+        # performa belum terbaca (galat sesaat, YouTube belum/tidak lagi terhubung): minggu ini tidak ditandai
+        run.log("laporan mingguan: performa YouTube belum terbaca; dicoba lagi di run berikutnya")
+        return
+    if not perf.videos:
+        run.log("laporan mingguan: belum ada video buatan Nero di channel; dilewati minggu ini")
+        if not run.dry_run:
+            analyst.mark_weekly(run.cfg, today, skipped="belum ada video")
+        return
+    items = analyst.weekly_items(perf)
+    if run.dry_run:
+        # isi laporan (statistik YouTube) tidak ditulis ke run.log: log run tidak ikut terhapus saat izin dicabut
+        run.log(f"laporan mingguan (uji coba): tidak dikirim ({len(perf.videos)} video; isinya: python -m "
+                "features.channel weekly-report)")
+        return
+    if not run.cfg.notify.telegram:
+        run.log("laporan mingguan: kiriman Telegram dimatikan (notify.telegram = false)")
+        return
+    if not telegram.configured(run.settings):
+        run.log("laporan mingguan: PERINGATAN token bot / chat ID Telegram belum diisi; tidak dikirim")
+        return
+    try:
+        telegram.send_items(items, settings=run.settings, cancel=run.cancel, log=run.log)
+    except telegram.TelegramError as e:
+        run.log(f"laporan mingguan: PERINGATAN belum terkirim ({e}); dicoba lagi di run berikutnya")
+        return
+    analyst.mark_weekly(run.cfg, today)
+    run.log("laporan mingguan: terkirim ke Telegram")
+
+
+def step_analyst(run: Run, force: bool) -> bool:
+    """SPEC 6.2, jalan paling awal: performa video 28 hari terakhir, learnings.md, dan laporan mingguan. Tidak pernah
+    menggagalkan run (galat = peringatan; pelajaran sebelumnya tetap dipakai)."""
+    today = timeutil.today_local(run.cfg.schedule.timezone)
+    try:
+        with analyst.guard():
+            perf, did = analyst.run(run.cfg, run.settings, today, force=force, log=run.log, progress=run.progress,
+                                    on_found=_record_found)
+            _weekly_report(run, perf)
+    except analyst.AnalystBusy as e:
+        run.log(f"analis: {e} Dilewati.")
+        return False
+    except (OSError, ValueError) as e:
+        run.log(f"analis: PERINGATAN {e}; dilewati")
+        return False
+    return did
+
+
+def step_state_update(run: Run, force: bool) -> bool:
+    """SPEC langkah 12: riwayat = video yang ada di YouTube. Upload lewat Nero sudah mencatatnya; langkah ini
+    melengkapinya bila sempat terlewat. Video yang diunggah sendiri dicatat analis begitu dikenali di channel."""
+    if run.dry_run:
+        run.log("riwayat: uji coba, riwayat tidak diubah")
+        return False
+    yt = run.ctx.load("youtube", YouTubeResult)
+    if yt is None or not yt.video_id:
+        run.log("riwayat: video tanggal ini belum ada di YouTube (yang diunggah sendiri dicatat saat analis "
+                "menemukannya)")
+        return False
+    _ensure_history(run, yt)
+    return False
+
+
+STEP_FUNCS = {"analyst": step_analyst, "research": step_research, "script": step_script, "qc": step_qc,
+              "seo": step_seo, "tts": step_tts, "visuals": step_visuals, "render": step_render,
+              "publish_youtube": step_publish_youtube, "manual_pack": step_manual_pack, "notify": step_notify,
+              "state_update": step_state_update}
 
 
 # --------------------------------------------------------------------------
@@ -1142,3 +1257,124 @@ def notify_test(day: date, *, echo=print, cancel: threading.Event | None = None,
         return EXIT_FAILED
     finally:
         ctx.release()
+
+
+# --------------------------------------------------------------------------
+# Analis atas perintah pengguna (tombol halaman / CLI), tanpa folder run
+# --------------------------------------------------------------------------
+ANALYST_LOG_MAX = 256 * 1024
+
+
+class _AnalystLog:
+    """Log analis di luar run harian: ke halaman/CLI dan data/channel/analyst.log. Peringatan terakhir diingat untuk
+    pesan gagal di halaman."""
+
+    def __init__(self, echo):
+        self.echo, self.warning = echo, ""
+        self.path = state.data_path("analyst.log")
+
+    def __call__(self, msg: str) -> None:
+        from datetime import datetime
+        line = f"{datetime.now():%H:%M:%S} {msg}"
+        if self.echo:
+            self.echo(f"[channel] {line}")
+        if "PERINGATAN" in msg:
+            self.warning = msg.split("PERINGATAN", 1)[1].strip()
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            if os.path.exists(self.path) and os.path.getsize(self.path) > ANALYST_LOG_MAX:
+                keep = state.read_text(self.path)[-ANALYST_LOG_MAX // 2:]
+                state.write_text_atomic(self.path, keep.split("\n", 1)[-1])
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%Y-%m-%d} {line}\n")
+        except OSError:
+            pass
+
+
+def _analyst_config(settings: dict, echo) -> ChannelConfig | None:
+    try:
+        return config.load_config(settings)
+    except ConfigError as e:
+        echo(f"[channel] {e}")
+        return None
+
+
+def analyze_now(*, echo=print, cancel: threading.Event | None = None,
+                on_progress: Callable[[str, float], None] | None = None, force: bool = True) -> int:
+    """Perbarui analisis performa sekarang (boleh walau channel nonaktif: hanya membaca YouTube). Laporan mingguan
+    tidak dikirim dari sini."""
+    settings = common.load_settings()
+    cfg = _analyst_config(settings, echo)
+    if cfg is None:
+        return EXIT_CONFIG
+    log = _AnalystLog(echo)
+    today = timeutil.today_local(cfg.schedule.timezone)
+    prog = (lambda f: on_progress("analyst", f)) if on_progress else None
+    try:
+        with cancelmod.cancel_scope(cancel), analyst.guard():
+            if prog:
+                prog(0.0)
+            log(f"analis: mulai ({today.isoformat()})")
+            perf, did = analyst.run(cfg, settings, today, force=force, log=log, progress=prog,
+                                    on_found=_record_found)
+    except analyst.AnalystBusy as e:
+        log(f"analis gagal: {e}")
+        return EXIT_LOCKED
+    except media.Cancelled:
+        log("analis: dibatalkan")
+        return EXIT_FAILED
+    except Exception as e:  # noqa: BLE001  dilaporkan ke halaman/CLI
+        log(f"analis gagal: {e}")
+        return EXIT_FAILED
+    if force and not did:
+        log(f"analis gagal: {log.warning or 'performa belum bisa dibaca'}")
+        return EXIT_FAILED
+    if prog:
+        prog(1.0)
+    log("analis: selesai" + (f" ({perf.learnings_state})" if perf else ""))
+    return EXIT_OK
+
+
+def weekly_report_now(*, echo=print, cancel: threading.Event | None = None,
+                      on_progress: Callable[[str, float], None] | None = None) -> int:
+    """Kirim laporan mingguan sekarang atas perintah pengguna (boleh walau channel nonaktif). Bila laporan minggu
+    ini belum terkirim, kiriman ini dicatat sebagai laporan minggu ini (run harian tidak mengirim ulang)."""
+    settings = common.load_settings()
+    cfg = _analyst_config(settings, echo)
+    if cfg is None:
+        return EXIT_CONFIG
+    if not telegram.configured(settings):
+        echo("[channel] Token bot / chat ID Telegram belum diisi.")
+        return EXIT_CONFIG
+    log = _AnalystLog(echo)
+    today = timeutil.today_local(cfg.schedule.timezone)
+    prog = (lambda f: on_progress("weekly_report", f)) if on_progress else None
+    try:
+        with cancelmod.cancel_scope(cancel), analyst.guard():
+            if prog:
+                prog(0.0)
+            perf, _ = analyst.run(cfg, settings, today, log=log,
+                                  progress=(lambda f: prog(0.8 * f)) if prog else None, on_found=_record_found)
+            if perf is None or not perf.videos:
+                if perf is None:             # galat sesaat saat membaca YouTube: alasannya di peringatan analis
+                    why = log.warning or "performa YouTube belum bisa dibaca"
+                else:
+                    why = perf.notes[0] if perf.notes else "belum ada video buatan Nero dengan data YouTube"
+                log(f"laporan mingguan gagal: {why}")
+                return EXIT_FAILED
+            telegram.send_items(analyst.weekly_items(perf), settings=settings, cancel=cancel, log=log)
+            if analyst.weekly_due(cfg, today):
+                analyst.mark_weekly(cfg, today)
+    except analyst.AnalystBusy as e:
+        log(f"laporan mingguan gagal: {e}")
+        return EXIT_LOCKED
+    except media.Cancelled:
+        log("laporan mingguan: dibatalkan")
+        return EXIT_FAILED
+    except Exception as e:  # noqa: BLE001  dilaporkan ke halaman/CLI
+        log(f"laporan mingguan gagal: {e}")
+        return EXIT_FAILED
+    if prog:
+        prog(1.0)
+    log("laporan mingguan: terkirim ke Telegram")
+    return EXIT_OK

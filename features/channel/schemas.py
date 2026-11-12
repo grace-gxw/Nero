@@ -338,6 +338,96 @@ class Ping(_Model):
 
 
 # --------------------------------------------------------------------------
+# Analis (SPEC 6.2): jawaban LLM yang dirapikan kode menjadi learnings.md
+# --------------------------------------------------------------------------
+LEARNING_KINDS = ("berhasil", "kurang", "saran")
+
+
+class LearningPoint(_Model):
+    kind: Literal[LEARNING_KINDS]
+    text: str = Field(min_length=5)
+    videos: list[int] = Field(default_factory=list)       # nomor video di data analis yang mendukung poin ini
+
+
+class AnalystDraft(_Model):
+    points: list[LearningPoint] = Field(default_factory=list)
+
+
+class Learning(_Model):
+    """Satu poin learnings.md beserta video (ID YouTube) yang mendukungnya."""
+    kind: Literal[LEARNING_KINDS]
+    text: str
+    video_ids: list[str] = Field(default_factory=list)
+
+
+class VideoNumbers(_Model):
+    """Angka YouTube Analytics satu video untuk satu rentang tanggal (None = tidak ada data, bukan 0)."""
+    engaged_views: float | None = None
+    views: float | None = None
+    minutes_watched: float | None = None
+    avg_view_duration: float | None = None      # detik
+    avg_view_pct: float | None = None           # persen durasi video yang ditonton rata-rata
+    likes: float | None = None
+    comments: float | None = None
+    shares: float | None = None
+
+
+class VideoPerf(_Model):
+    """Satu video buatan Nero di channel. Judul, topik, format, hook, dan durasi dari Nero (bukan data YouTube);
+    sisanya dari YouTube dan diperbarui setiap analisis."""
+    video_id: str
+    day: str                                    # tanggal run Nero
+    source: Literal["api", "manual"] = "api"    # diunggah lewat Nero / diunggah sendiri (dikenali dari judulnya)
+    title: str = ""
+    topic: str = ""
+    format: str = ""
+    hook: str = ""
+    duration: float = 0
+    published_at: str = ""                      # snippet.publishedAt (UTC)
+    privacy: str = ""
+    public_views: int | None = None             # statistics.viewCount sekarang (termasuk putar ulang & autoplay)
+    public_likes: int | None = None
+    public_comments: int | None = None
+    window_start: str = ""                      # 7 hari pertama sejak tayang (tanggal waktu Pasifik)
+    window_end: str = ""
+    complete: bool = False                      # 7 hari pertama sudah lengkap di YouTube Analytics
+    first_week: VideoNumbers | None = None
+    status: str = ""                            # lengkap | sementara | belum_ada_data | belum_tayang
+    note: str = ""
+
+
+class ChannelWeek(_Model):
+    """Total seluruh channel untuk satu rentang 7 hari (YouTube Analytics)."""
+    start: str
+    end: str
+    days: int = 0                               # hari yang ada datanya
+    engaged_views: float | None = None
+    views: float | None = None
+    minutes_watched: float | None = None
+    subscribers_gained: float | None = None
+    subscribers_lost: float | None = None
+
+
+class Performance(_Model):
+    """performance.json: hasil analis terakhir (SPEC 6.2)."""
+    day: str = ""                               # tanggal lokal analisis
+    updated_at: str = ""                        # UTC
+    auth_verified_at: str = ""                  # izin YouTube terakhir terbukti berlaku (dicek ulang ≤ 30 hari)
+    channel_id: str = ""
+    data_through: str = ""                      # hari terakhir (waktu Pasifik) yang dianggap sudah lengkap
+    analytics: bool = False                     # YouTube Analytics API terbaca
+    notes: list[str] = Field(default_factory=list)
+    videos: list[VideoPerf] = Field(default_factory=list)
+    this_week: ChannelWeek | None = None
+    prev_week: ChannelWeek | None = None
+    mature: int = 0                             # video dengan data 7 hari pertama yang lengkap
+    learnings: list[Learning] = Field(default_factory=list)
+    learnings_state: str = ""                   # siap | data_belum_cukup | izin_ai | gagal | belum_terhubung
+    learnings_fp: str = ""                      # sidik data yang dirangkum (AI tidak dipanggil ulang bila sama)
+    learnings_at: str = ""
+
+
+# --------------------------------------------------------------------------
 # Draf yang dijawab LLM, lalu dirapikan kode menjadi model di atas
 # --------------------------------------------------------------------------
 class SearchQuery(_Model):

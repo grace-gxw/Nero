@@ -180,8 +180,7 @@ def save_performance(data: dict) -> None:
 
 def load_learnings() -> str:
     try:
-        with open(data_path("learnings.md"), encoding="utf-8") as f:
-            return f.read()
+        return read_text(data_path("learnings.md"))
     except OSError:
         return ""
 
@@ -189,6 +188,34 @@ def load_learnings() -> str:
 def save_learnings(text: str) -> None:
     with _lock:
         write_text_atomic(data_path("learnings.md"), text.strip() + "\n")
+
+
+# berkas yang berisi (atau disusun dari) statistik YouTube milik channel: dihapus saat izin YouTube dicabut atau
+# pengguna meminta (Developer Policies III.D.2.c & III.E.4.g). Riwayat & youtube.json (penjaga upload ganda) tidak,
+# begitu juga weekly_report.json (hanya tanggal kiriman: penjaga supaya laporan seminggu tidak terkirim dua kali).
+PERFORMANCE_FILES = ("performance.json", "learnings.md")
+
+
+def clear_performance() -> int:
+    """Hapus data performa yang disimpan Nero. Hasil: jumlah berkas yang dihapus. Tidak mengubah apa pun di YouTube."""
+    removed = 0
+    with _lock:
+        for name in PERFORMANCE_FILES:
+            path = data_path(name)
+            if os.path.exists(path):
+                remove_retry(path)
+                removed += 1
+    return removed
+
+
+def load_weekly() -> dict:
+    data = read_json(data_path("weekly_report.json"), {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_weekly(data: dict) -> None:
+    with _lock:
+        write_json_atomic(data_path("weekly_report.json"), data)
 
 
 # --------------------------------------------------------------------------

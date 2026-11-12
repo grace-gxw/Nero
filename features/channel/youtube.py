@@ -50,11 +50,12 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 API_URL = "https://www.googleapis.com/youtube/v3"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+ANALYTICS_URL = "https://youtubeanalytics.googleapis.com/v2/reports"
 TOS_URL = "https://www.youtube.com/t/terms"
 
 SCOPE_UPLOAD = "https://www.googleapis.com/auth/youtube.upload"
 SCOPE_READONLY = "https://www.googleapis.com/auth/youtube.readonly"
-SCOPE_ANALYTICS = "https://www.googleapis.com/auth/yt-analytics.readonly"    # untuk analis (Fase I-7)
+SCOPE_ANALYTICS = "https://www.googleapis.com/auth/yt-analytics.readonly"    # analis (reports.query)
 SCOPE_MANAGE = "https://www.googleapis.com/auth/youtube.force-ssl"           # hanya bila playlist dipakai
 REQUIRED_SCOPES = (SCOPE_UPLOAD, SCOPE_READONLY)
 SCOPE_NAMES = {SCOPE_UPLOAD: "upload video", SCOPE_READONLY: "melihat channel",
@@ -112,6 +113,8 @@ UPLOAD_BUSY = "Sedang mengunggah ke YouTube. Tunggu selesai dulu."
 # Pesan galat
 # --------------------------------------------------------------------------
 _API_OFF = "YouTube Data API v3 belum diaktifkan di project Google Cloud (APIs & Services → Library)."
+ANALYTICS_OFF = ("YouTube Analytics API belum diaktifkan di project Google Cloud (APIs & Services → Library → YouTube "
+                 "Analytics API → Enable). API ini terpisah dari YouTube Data API v3.")
 REASONS = {
     "quotaExceeded": "Kuota YouTube API hari ini habis. Kuota pulih pukul 00.00 waktu Pasifik (14.00–15.00 WIB).",
     "uploadLimitExceeded": "Batas upload harian channel YouTube sudah tercapai. Coba lagi besok.",
@@ -327,6 +330,11 @@ def access_token(settings: dict | None = None, *, session=None, fresh: bool = Fa
                             "grant_type": "refresh_token"}, session)
     except AuthError as e:
         _save_account(problem=str(e))
+        if e.reason == "invalid_grant":
+            # izin dicabut/kedaluwarsa (Developer Policies III.D.2.c): statistik yang disimpan berdasarkan izin itu
+            # dihapus, dari jalur mana pun galat ini ketahuan (upload, cek status, tren, analis)
+            with contextlib.suppress(OSError):
+                state.clear_performance()
         raise
     with _LOCK:
         _tokens[key] = (body["access_token"], time.time() + int(body.get("expires_in") or 3600))
@@ -416,6 +424,10 @@ def disconnect(*, session=None) -> bool:
     Proses menghubungkan yang sedang berjalan dibatalkan dulu, supaya tidak menyimpan token sesudahnya."""
     if upload_active():
         raise YouTubeError(UPLOAD_BUSY)
+    from .analyst import running as analyst_running
+    if analyst_running():
+        # analis yang sedang berjalan akan menulis ulang data performa (dan bisa mengirim laporan) setelah dihapus
+        raise YouTubeError("Analisis performa sedang berjalan. Tunggu selesai dulu.")
     flow = _flow
     if flow is not None:
         flow.cancel()
@@ -428,6 +440,8 @@ def disconnect(*, session=None) -> bool:
     with _LOCK:
         _tokens.clear()
         state.remove_retry(_account_path())
+    # Developer Policies III.D.2.c: data statistik yang disimpan berdasarkan izin ini dihapus begitu izin dicabut
+    state.clear_performance()
     revoked = False
     if rt:
         with contextlib.suppress(requests.RequestException):
@@ -613,6 +627,7 @@ def status(settings: dict | None = None) -> dict:
             "connected_at": acct.get("connected_at", "") if is_connected else "",
             "problem": acct.get("problem", "") if is_connected else "",
             "can_upload": SCOPE_UPLOAD in scopes, "can_playlist": SCOPE_MANAGE in scopes,
+            "can_analytics": SCOPE_ANALYTICS in scopes,
             "flow": _flow.snapshot() if _flow is not None else None, "usage": usage()}
 
 
@@ -1161,6 +1176,91 @@ def add_playlist_once(ctx, res: YouTubeResult, playlist_id: str, *, settings: di
         res = res.model_copy(update={"playlist_error": str(e)})
     ctx.save("youtube", res)
     return res
+
+
+# --------------------------------------------------------------------------
+# Statistik untuk analis (SPEC 6.2)
+# --------------------------------------------------------------------------
+UPLOAD_PAGES = 10                   # daftar upload dibaca maks. 10 halaman × 50 (urutannya tidak dijamin dokumen)
+VIDEO_IDS_PER_CALL = 50
+
+
+def can_analytics() -> bool:
+    """Izin YouTube Analytics (yt-analytics.readonly) diberikan saat menghubungkan. Token dari environment variable
+    tidak punya catatan scope: dicoba saja (izin yang kurang menjadi catatan analis, bukan kegagalan)."""
+    if config.key_from_env("yt_refresh_token"):
+        return True                  # scope yang tercatat milik token OAuth dari Hubungkan, bukan token env var
+    return SCOPE_ANALYTICS in set(account().get("scopes") or [])
+
+
+def list_uploads(uploads: str, *, since: datetime, settings: dict | None = None, session=None) -> list[dict]:
+    """Video di daftar upload channel yang tayang/ditambahkan sejak `since`: [{video_id, title, published}]. Judul
+    hanya untuk dicocokkan dengan judul buatan Nero, tidak disimpan. playlistItems.list, 1 unit per halaman."""
+    out: list[dict] = []
+    token = ""
+    for _ in range(UPLOAD_PAGES):
+        _check()
+        params = {"part": "snippet,contentDetails", "playlistId": uploads, "maxResults": 50}
+        if token:
+            params["pageToken"] = token
+        try:
+            r = _api("GET", f"{API_URL}/playlistItems", what="Membaca daftar upload channel", settings=settings,
+                     session=session, params=params)
+        except YouTubeError as e:
+            if e.status == 404:          # channel yang belum punya video: daftar upload-nya belum ada
+                return out
+            raise
+        body = r.json()
+        for item in body.get("items") or []:
+            sn, cd = item.get("snippet") or {}, item.get("contentDetails") or {}
+            vid = cd.get("videoId") or (sn.get("resourceId") or {}).get("videoId")
+            # contentDetails.videoPublishedAt = waktu tayang; snippet.publishedAt = waktu masuk daftar upload
+            when = _parse_time(cd.get("videoPublishedAt")) or _parse_time(sn.get("publishedAt"))
+            if vid and (when is None or when >= since):
+                out.append({"video_id": str(vid), "title": str(sn.get("title") or "").strip(),
+                            "published": _now_iso(when) if when else ""})
+        token = str(body.get("nextPageToken") or "")
+        if not token:
+            break
+    return out
+
+
+def fetch_videos(ids, *, settings: dict | None = None, session=None) -> dict[str, dict]:
+    """videos.list (snippet, status, statistics) per 50 ID, 1 unit per panggilan: {video_id: resource}. ID yang tidak
+    kembali = video dihapus atau tidak bisa dibaca lagi."""
+    ids = list(dict.fromkeys(str(i) for i in ids if i))
+    out: dict[str, dict] = {}
+    for i in range(0, len(ids), VIDEO_IDS_PER_CALL):
+        _check()
+        part = ids[i:i + VIDEO_IDS_PER_CALL]
+        r = _api("GET", f"{API_URL}/videos", what="Membaca statistik video", settings=settings, session=session,
+                 params={"part": "snippet,status,statistics", "id": ",".join(part)})
+        for item in r.json().get("items") or []:
+            if isinstance(item, dict) and item.get("id") in part:
+                out[str(item["id"])] = item
+    return out
+
+
+def analytics_report(params: dict, *, settings: dict | None = None, session=None) -> list[dict]:
+    """YouTube Analytics API reports.query untuk channel yang terhubung. Hasil: baris sebagai {nama kolom: nilai},
+    kolom dipetakan dari columnHeaders (bukan urutan metrik). Tidak ada data = [] (respons tanpa rows)."""
+    _check()
+    _count("analytics")
+    try:
+        r = _api("GET", ANALYTICS_URL, what="Membaca YouTube Analytics", units=0, settings=settings,
+                 session=session, params={"ids": "channel==MINE", **params})
+    except YouTubeError as e:
+        text = str(e)
+        if e.reason in ("accessNotConfigured", "SERVICE_DISABLED") or "has not been used" in text \
+                or "is disabled" in text:
+            raise YouTubeError(ANALYTICS_OFF, e.reason, e.status) from None
+        raise
+    try:
+        body = r.json()
+    except ValueError:
+        raise YouTubeError("Jawaban YouTube Analytics tidak terbaca.") from None
+    names = [str(h.get("name") or "") for h in body.get("columnHeaders") or [] if isinstance(h, dict)]
+    return [dict(zip(names, row, strict=False)) for row in body.get("rows") or [] if isinstance(row, list)]
 
 
 # --------------------------------------------------------------------------

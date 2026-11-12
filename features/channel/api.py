@@ -17,6 +17,10 @@ Nero · Channel Otomatis - rute /api/channel/* (didaftarkan app.py).
   POST /telegram/chats          chat yang baru menekan Start di bot (untuk mengisi chat ID)
   POST /telegram/test           kirim pesan uji
   POST /telegram/send           {date} -> kirim paket run itu ke Telegram sebagai pekerjaan latar
+  GET  /analytics               performa video, learnings.md, status laporan mingguan (analyst.page_data)
+  POST /analytics/run           perbarui analisis performa sebagai pekerjaan latar
+  POST /analytics/report        kirim laporan mingguan sekarang sebagai pekerjaan latar
+  POST /analytics/clear         hapus data performa yang disimpan Nero (tidak mengubah apa pun di YouTube)
 
 Selama settings.channel.enabled = false, fitur ini tidak menjalankan apa pun di latar belakang; halaman hanya
 menjalankan uji coba dan unggah uji (private) atas permintaan pengguna.
@@ -31,7 +35,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 import common
 
-from . import config, genres, jobs, runs, state, telegram, timeutil, youtube
+from . import analyst, config, genres, jobs, runs, state, telegram, timeutil, youtube
 from .config import ID, SETTINGS, ConfigError
 from .runctx import RunLocked
 
@@ -141,8 +145,8 @@ def post_run():
     from . import pipeline
     body = request.get_json(force=True, silent=True) or {}
     mode = str(body.get("mode") or "video")
-    if mode in ("upload", "notify"):
-        return jsonify(error="Unggah ke YouTube dan kirim ke Telegram memakai tombolnya di hasil run."), 400
+    if mode in ("upload", "notify", *jobs.GLOBAL_MODES):
+        return jsonify(error="Unggah, kirim ke Telegram, dan analisis memakai tombolnya masing-masing."), 400
     genre = str(body.get("genre") or "") or None
     force = body.get("force") or []
     if not isinstance(force, list):
@@ -334,6 +338,66 @@ def post_telegram_send():
     except ValueError as e:
         return jsonify(error=str(e)), 400
     return jsonify(ok=True, job=job.snapshot())
+
+
+# --------------------------------------------------------------------------
+# Analitik (Fase I-7)
+# --------------------------------------------------------------------------
+def _today() -> tuple[config.ChannelConfig, object]:
+    cfg = config.load_config()
+    return cfg, timeutil.today_local(cfg.schedule.timezone)
+
+
+@bp.get("/analytics")
+def get_analytics():
+    try:
+        cfg, today = _today()
+    except ConfigError as e:
+        return jsonify(error=str(e)), 500
+    return jsonify(analyst.page_data(cfg, today))
+
+
+def _start_global(mode: str):
+    try:
+        _, today = _today()
+        job = jobs.start(today, mode)
+    except ConfigError as e:
+        return jsonify(error=str(e)), 400
+    except jobs.JobBusy as e:
+        return jsonify(error=str(e)), 409
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, job=job.snapshot())
+
+
+@bp.post("/analytics/run")
+def post_analytics_run():
+    if analyst.running():
+        return jsonify(error="Analisis performa sedang berjalan. Tunggu selesai dulu."), 409
+    return _start_global("analyst")
+
+
+@bp.post("/analytics/report")
+def post_analytics_report():
+    if not telegram.configured():
+        return jsonify(error="Token bot / chat ID Telegram belum diisi. Atur di Pengaturan."), 400
+    if analyst.running():
+        return jsonify(error="Analisis performa sedang berjalan. Tunggu selesai dulu."), 409
+    return _start_global("report")
+
+
+@bp.post("/analytics/clear")
+def post_analytics_clear():
+    """Hapus performance.json dan learnings.md (Developer Policies III.E.4.g). Video,
+    statistik, dan data lain di YouTube tidak berubah."""
+    job = jobs.current()
+    if analyst.running() or (job is not None and job.running() and job.mode in jobs.GLOBAL_MODES):
+        return jsonify(error="Analisis performa sedang berjalan. Tunggu selesai dulu."), 409
+    try:
+        removed = state.clear_performance()
+    except OSError as e:
+        return jsonify(error=f"Data performa belum bisa dihapus ({e.strerror}). Coba lagi."), 500
+    return jsonify(ok=True, removed=removed)
 
 
 def start():

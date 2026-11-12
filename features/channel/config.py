@@ -193,7 +193,15 @@ class YouTubeCfg(_Section):
 
 class NotifyCfg(_Section):
     telegram: bool = True
-    weekly_report_day: Literal[DAYS] = "monday"
+    weekly_report_day: Literal[DAYS] = "monday"     # laporan mingguan analis (SPEC 6.2), hari menurut zona jadwal
+
+
+class AnalystCfg(_Section):
+    # Statistik channel dari YouTube (Authorized Data) hanya boleh diakses pengguna atau agen yang ia setujui
+    # (YouTube Developer Policies III.E.3.b). Mengirimnya ke penyedia AI di llm.providers untuk menyusun learnings.md
+    # butuh izin tegas pengguna; paket gratis Gemini memakai prompt untuk pengembangan produk dan bisa dibaca
+    # peninjau manusia. false = statistik tetap dibaca untuk halaman & laporan mingguan, tanpa pelajaran otomatis.
+    share_with_ai: bool = False
 
 
 def words_range(cfg: ChannelConfig) -> tuple[int, int]:
@@ -250,6 +258,7 @@ class ChannelConfig(_Section):
     research: ResearchCfg = Field(default_factory=ResearchCfg)
     youtube: YouTubeCfg = Field(default_factory=YouTubeCfg)
     notify: NotifyCfg = Field(default_factory=NotifyCfg)
+    analyst: AnalystCfg = Field(default_factory=AnalystCfg)
 
     @model_validator(mode="after")
     def _ai_disclosure(self):

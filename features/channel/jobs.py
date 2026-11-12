@@ -22,13 +22,16 @@ STEP_LABELS = {
     "research": "Riset topik", "script": "Menulis skrip", "qc": "Pemeriksaan fakta (QC)",
     "seo": "Judul & deskripsi", "tts": "Suara", "visuals": "Visual", "render": "Render video",
     "publish_youtube": "Unggah ke YouTube", "manual_pack": "Paket unggah manual", "notify": "Kirim ke Telegram",
+    "analyst": "Analisis performa", "state_update": "Catat riwayat", "weekly_report": "Laporan mingguan",
 }
 # nama berkas hasil tiap langkah, untuk mengenali baris log "lewati <nama>: ..."
 _RESULT_NAME = {"research": "research", "script": "script", "qc": "qc", "seo": "metadata", "tts": "words",
                 "visuals": "visuals", "render": "render", "publish_youtube": "youtube", "manual_pack": "captions",
-                "notify": "telegram"}
+                "notify": "telegram", "analyst": "analyst"}
 # upload = unggah uji ke YouTube (private); notify = kirim paket ke Telegram. Keduanya bukan dry-run.
-MODES = ("plan", "video", "media", "upload", "notify")
+# analyst = perbarui analisis performa; report = kirim laporan mingguan sekarang. Keduanya tanpa folder run.
+MODES = ("plan", "video", "media", "upload", "notify", "analyst", "report")
+GLOBAL_MODES = ("analyst", "report")
 LOG_LINES = 300
 _PREFIX = re.compile(r"^\[channel\]\s*(?:\d{2}:\d{2}:\d{2}\s+)?")
 
@@ -42,6 +45,10 @@ def steps_for(mode: str) -> list[str]:
         return ["publish_youtube"]
     if mode == "notify":
         return ["notify"]
+    if mode == "analyst":
+        return ["analyst"]
+    if mode == "report":
+        return ["weekly_report"]
     # uji coba: langkah upload hanya mencatat "tidak diunggah", jadi tidak ditampilkan
     return [s for s in pipeline.resolve_steps(mode) if s in pipeline.IMPLEMENTED and s not in pipeline.PUBLISH_STEPS]
 
@@ -77,10 +84,12 @@ class RunJob:
                 for step, name in _RESULT_NAME.items():
                     if name == m.group(1) and step in self.steps:
                         self.steps[step]["reused"] = True
-            m = re.match(r"(telegram \(kirim uji\)|youtube \(unggah uji\)) gagal: (.*)", text)
+            m = re.match(r"(telegram \(kirim uji\)|youtube \(unggah uji\)|analis|laporan mingguan) gagal: (.*)",
+                         text)
             if m:                                   # tindakan pengguna yang tidak memakai penanda run
                 self.error = m.group(2)[:600]
-                step = "notify" if m.group(1).startswith("telegram") else "publish_youtube"
+                step = {"telegram": "notify", "youtube": "publish_youtube", "analis": "analyst",
+                        "laporan": "weekly_report"}[m.group(1).split(" ", 1)[0]]
                 if step in self.steps:
                     self.steps[step]["state"] = "gagal"
             m = re.match(r"(GAGAL|DIBATALKAN) di langkah (\w+)(?::\s*(.*))?", text)
@@ -113,6 +122,10 @@ class RunJob:
             elif self.mode == "notify":
                 code = pipeline.notify_test(self.day, echo=self.echo, cancel=self.cancel,
                                             on_progress=self.on_progress)
+            elif self.mode == "analyst":
+                code = pipeline.analyze_now(echo=self.echo, cancel=self.cancel, on_progress=self.on_progress)
+            elif self.mode == "report":
+                code = pipeline.weekly_report_now(echo=self.echo, cancel=self.cancel, on_progress=self.on_progress)
             else:
                 code = pipeline.run_daily(self.day, dry_run=True, only=self.mode, force=self.force,
                                           genre=self.genre, echo=self.echo, cancel=self.cancel,
@@ -127,6 +140,15 @@ class RunJob:
             yt = RunContext(self.day, echo=None).load("youtube", YouTubeResult)
             if yt is not None and yt.status == "masalah":
                 warning = (yt.note or "Video terunggah tetapi ada masalah di YouTube.")[:600]
+        if code == pipeline.EXIT_OK and self.mode == "analyst":
+            from . import analyst
+            perf = analyst.load()
+            if perf is not None and perf.notes:
+                warning = perf.notes[0][:600]           # mis. YouTube Analytics API belum diaktifkan
+            elif perf is None:                          # YouTube belum/tidak lagi terhubung: alasannya di learnings.md
+                from .state import load_learnings
+                why = next((x for x in load_learnings().splitlines() if x.strip() and not x.startswith("#")), "")
+                warning = (why or "Performa video belum bisa dibaca.")[:600]
         with self.lock:
             self.code = code
             self.finished = time.time()

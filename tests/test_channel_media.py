@@ -1033,7 +1033,9 @@ class PipelineMedia(ChannelSandbox):
                      "captions.srt"):
             self.assertTrue(os.path.isfile(self.rd(name)), name)
         self.assertTrue(self.load("render", RenderInfo).valid)
-        self.assertIn("analyst belum tersedia", out)
+        # analis jalan paling awal: YouTube belum dihubungkan = learnings.md menjelaskannya (bukan kegagalan)
+        self.assertIn("YouTube belum dihubungkan", pipeline.state.load_learnings())
+        self.assertIn("riwayat: uji coba, riwayat tidak diubah", out)
         self.assertIn("youtube: uji coba, video tidak diunggah", out)   # dry-run tidak pernah mengunggah
         copied = os.path.join(self.tmp, "output", "channel", DAY.isoformat(), "final.mp4")
         self.assertTrue(os.path.isfile(copied))
