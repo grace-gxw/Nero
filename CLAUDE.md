@@ -51,7 +51,7 @@ Panduan singkat untuk sesi Claude Code berikutnya. Detail untuk pengguna ada di 
   - `writer.py`: rotasi format, skrip, QC + tulis ulang maks. 2×, SEO.
   - Masalah yang bisa dipastikan kode (panjang, format, visual, URL klaim) ditambahkan ke QC.
 - Media (Fase I-3):
-  - `voice.py`: edge-tts per bagian narasi + jeda, timing dari WordBoundary (cadangan Whisper 16 kHz). Rentang kata otomatis per suara: `config.words_range()`.
+  - `voice.py`: edge-tts per bagian narasi + jeda, timing dari WordBoundary (cadangan Whisper 16 kHz). Rentang kata otomatis per suara: `config.words_range()` (ideal, untuk prompt) dan `config.words_limits()` (batas keras yang dicek kode di QC).
   - `visuals.py`: satu klip per segmen dengan jumlah frame tepat. Rantai cadangan ai_image → stock → motion_graphic → polos. Pembantunya `stock.py` (Pexels/Pixabay, cache 24 jam), `ai_images.py` (Cloudflare, kuota per tanggal UTC), dan `graphics.py` (template Pillow).
   - `render.py`: base.mkv (klip + suara + musik), lalu `engine.render_clip` untuk subtitle, lalu validasi.
   - Tes tidak boleh memanggil jaringan atau `engine.transcribe`. FFmpeg sungguhan boleh, asal klipnya pendek.

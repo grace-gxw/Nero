@@ -230,3 +230,9 @@ Temuan Fase I-3 (dokumentasi resmi & uji nyata 12 Nov 2026):
   antarbintang sejak 2012. Prompt skrip & QC kini meminta pertentangan semacam ini ditandai, tetapi QC dengan
   `gemini-3.5-flash-lite` menggolongkannya sebagai "quality" sehingga naskah tetap lolos. Pemeriksaan manusia
   (mode `manual`) dan model yang lebih kuat (Groq) tetap diperlukan.
+- Gemini ringan selalu menulis ±110–120 kata walau diminta 122–146. Karena itu ada dua rentang. Prompt meminta
+  rentang ideal (`config.words_range`). Pemeriksaan kode di QC hanya menolak naskah di luar batas keras
+  (`config.words_limits`, Ardi ±112–169, Gadis ±85–128), yaitu jumlah kata yang pasti menghasilkan video di luar
+  target ±3 dtk walau rate disesuaikan.
+- Kunci run milik proses yang sudah mati (Nero ditutup paksa) langsung dilepas lewat pemeriksaan PID, tidak
+  menunggu 3 jam.
