@@ -154,10 +154,14 @@ class Scheduler:
         if clock_back(st, today):
             # jam sistem mundur (mis. koreksi waktu Windows): jangan memulai run kedua untuk hari yang sudah dijalankan
             return "jam_mundur"
+        if st.get("state") == "berjalan":
+            # juga run kemarin yang masih berjalan lewat tengah malam: hasilnya dicatat dulu (_settle) sebelum
+            # catatan berganti ke hari ini
+            return "berjalan"
         if st.get("day") != today.isoformat():
             st = {"day": today.isoformat(), "state": "menunggu", "attempts": 0}
             _save(st)
-        if st["state"] in ("berjalan", "selesai", "dilewati", "dibatalkan", "menyerah"):
+        if st["state"] in ("selesai", "dilewati", "dibatalkan", "menyerah"):
             return st["state"]
         if st["state"] != "gagal" and now < run_at(cfg, today):
             return "menunggu"                             # run yang gagal (mis. dari tombol) mengikuti jeda coba ulang
@@ -223,11 +227,13 @@ class Scheduler:
             # run tanggal itu masih dipegang proses yang hidup (mis. CLI, atau Nero lain). Kunci milik Nero yang mati
             # tidak dihitung, termasuk bila PID-nya sudah dipakai proses baru (runctx.lock_active)
             return st
-        # pekerjaannya tidak ada lagi: Nero ditutup/mati di tengah run. Dilanjutkan (checkpoint) di percobaan berikutnya.
-        return self._finish(st, EXIT_FAILED, "gagal", "Run terputus (Nero ditutup di tengah run).", now, cfg)
+        # pekerjaannya tidak ada lagi: Nero ditutup/mati di tengah run. Dilanjutkan (checkpoint) begitu Nero siap lagi
+        # (setelah masa tunggu ±2 menit), bukan 1 jam lagi; tetap dihitung sebagai percobaan.
+        return self._finish(st, EXIT_FAILED, "gagal", "Run terputus (Nero ditutup di tengah run).", now, cfg,
+                            retry_now=True)
 
     def _finish(self, st: dict, code: int | None, status: str, error: str, now: datetime,
-                cfg: config.ChannelConfig) -> dict:
+                cfg: config.ChannelConfig, retry_now: bool = False) -> dict:
         st = {**st, "finished_at": _iso(now), "job_id": ""}
         if code == EXIT_OK:
             st.update(state="selesai", note="")
@@ -243,7 +249,7 @@ class Scheduler:
                 _notify_skip(st["day"], st["note"])
         else:
             attempts = int(st.get("attempts") or 1)
-            retry = now + timedelta(minutes=RETRY_MINUTES[min(attempts, MAX_ATTEMPTS - 1) - 1])
+            retry = now if retry_now else now + timedelta(minutes=RETRY_MINUTES[min(attempts, MAX_ATTEMPTS - 1) - 1])
             note = (error or "Run gagal.")[:300]
             if attempts >= MAX_ATTEMPTS:
                 st.update(state="menyerah", note=note, next_retry="")
@@ -291,7 +297,7 @@ def status(cfg: config.ChannelConfig | None = None, now: datetime | None = None)
     if back:
         st = {**st, "state": "jam_mundur", "note": "Jam komputer mundur ke hari yang sudah dijalankan; run ditahan "
                                                    "sampai tanggalnya kembali benar."}
-    elif st.get("day") != today.isoformat():
+    elif st.get("day") != today.isoformat() and st.get("state") != "berjalan":
         st = {"day": today.isoformat(), "state": "menunggu", "attempts": 0}
     at = run_at(cfg, today)
     nxt = at if now < at and st["state"] == "menunggu" else run_at(cfg, today + timedelta(days=1))
@@ -299,6 +305,8 @@ def status(cfg: config.ChannelConfig | None = None, now: datetime | None = None)
         nxt = _parse(st["next_retry"]) or nxt
     elif st["state"] == "menunggu" and now >= at:
         nxt = now                                          # dikejar pada pemeriksaan berikutnya (≤ 1 menit)
+    elif st["state"] == "berjalan" and st.get("day") != today.isoformat():
+        nxt = max(at, now)                                 # run kemarin masih berjalan; run hari ini menyusul
     return {"enabled": cfg.enabled, "run_time": cfg.schedule.run_time, "timezone": cfg.schedule.timezone,
             "today": {k: st.get(k, "") for k in ("day", "state", "attempts", "started_at", "finished_at",
                                                  "next_retry", "note")},

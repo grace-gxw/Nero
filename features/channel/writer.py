@@ -53,7 +53,13 @@ def script_issues(script: Script, cfg: ChannelConfig, research: Research, fmt: s
     out: list[Issue] = []
     lo, hi = config.words_limits(cfg)
     if not lo <= script.word_count <= hi:
-        fix = "tambah fakta/kalimat" if script.word_count < lo else "pendekkan kalimat atau buang satu segmen"
+        # perbaikan diarahkan ke rentang ideal: model kecil berhenti tepat di angka batas, yang sering masih
+        # terlalu pendek setelah jadi suara
+        ideal_lo, ideal_hi = config.words_range(cfg)
+        if script.word_count < lo:
+            fix = f"tambah fakta/kalimat sampai sekitar {ideal_lo}–{ideal_hi} kata"
+        else:
+            fix = f"pendekkan kalimat atau buang satu segmen sampai sekitar {ideal_lo}–{ideal_hi} kata"
         out.append(Issue(type="length", detail=f"jumlah kata yang diucapkan {script.word_count}, harus {lo}–{hi}",
                          fix=fix))
     if script.format != fmt:

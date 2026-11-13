@@ -84,13 +84,14 @@ def post_settings():
         if not isinstance(gid, str) or gid not in genres.GENRE_BY_ID:
             return jsonify(error=f"Genre '{gid}' tidak dikenal."), 400
         patch = common._merge(genres.as_patch(gid), patch)    # isian sendiri menimpa isian genre
+    kick = False
     try:
         if patch:
             cfg = config.save_config(patch)      # divalidasi utuh dulu; gagal = tidak ada yang tersimpan
+            kick = True
             job = jobs.current()
             if not cfg.enabled and job is not None and job.running() and job.mode == "daily":
                 jobs.cancel()                    # dimatikan di tengah run harian: tidak ada upload/kiriman lagi
-            scheduler.get().kick()               # mis. baru diaktifkan atau jam run diganti
         keys, clear = body.get("keys"), body.get("clear_keys")
         if isinstance(keys, dict) or isinstance(clear, list):
             keys = {k: v for k, v in (keys if isinstance(keys, dict) else {}).items() if k not in OAUTH_ONLY_KEYS}
@@ -98,6 +99,11 @@ def post_settings():
             config.save_keys(keys, clear)
     except ConfigError as e:
         return jsonify(error=str(e)), 400
+    finally:
+        if kick:
+            # mis. baru diaktifkan atau jam run diganti. Setelah key ikut tersimpan: run yang langsung dimulai
+            # (jam run hari ini sudah lewat) memakai key yang diisi di simpanan yang sama (mis. chat ID Telegram)
+            scheduler.get().kick()
     return jsonify(ok=True, **_public())
 
 

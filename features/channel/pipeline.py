@@ -31,7 +31,7 @@ from datetime import date, timedelta
 
 import common
 
-from . import analyst, config, genres, manual_pack, media, research, state, telegram, timeutil, writer, youtube
+from . import analyst, config, genres, manual_pack, media, memory, research, state, telegram, timeutil, writer, youtube
 from . import cancel as cancelmod
 from .config import ChannelConfig, ConfigError
 from .runctx import DEPENDS, FINGERPRINTS, STEPS, RunContext, RunLocked, downstream, lock_active, sha
@@ -79,14 +79,18 @@ class Run:
     settings: dict
     dry_run: bool
     ran: list[str] = field(default_factory=list)
-    skipped: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)      # hasil sebelumnya dipakai ulang ("lewati ...")
+    idle: list[str] = field(default_factory=list)         # tidak berlaku untuk run ini (mis. upload API nonaktif)
     cancel: threading.Event | None = None
     on_progress: Callable[[str, float], None] | None = None
     step: str = ""
     genre: str = ""                  # genre khusus run ini (--genre), dicatat di inputs.json
     alerts: bool = False             # kegagalan dikirim ke Telegram (hanya run harian sungguhan)
+    reused: bool = False             # langkah yang sedang berjalan memakai hasil sebelumnya
 
     def log(self, msg: str) -> None:
+        if msg.startswith("lewati "):
+            self.reused = True
         self.ctx.log(msg)
 
     def progress(self, frac: float) -> None:
@@ -240,15 +244,17 @@ def step_research(run: Run, force: bool) -> bool:
         return False
     old = run.ctx.load("research", Research)        # riset diulang = minta topik baru, bukan topik yang sama
     _begin(run, "research")
+    # juga topik tanggal ini yang naskahnya gagal QC di run sebelumnya (research.json-nya sudah diganti/dihapus)
+    avoid = [old.chosen.topic if old else "", *_failed_topics(run)]
     res = research.run(run.cfg, run.ctx.day, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
-                       avoid_topics=[old.chosen.topic] if old else [], log=run.log)
+                       avoid_topics=list(dict.fromkeys(t for t in avoid if t)), log=run.log)
     run.ctx.save("research", res)
     run.ctx.set_fingerprint("research", fp)
     return True
 
 
 def _format(run: Run) -> str:
-    return writer.pick_format(run.cfg.video.formats_rotation, state.last_formats(2))
+    return writer.pick_format(run.cfg.video.formats_rotation, memory.last_formats(run.ctx.day))
 
 
 def step_script(run: Run, force: bool) -> bool:
@@ -260,7 +266,7 @@ def step_script(run: Run, force: bool) -> bool:
     fmt = _format(run)
     run.log(f"skrip: format {fmt}")
     script = writer.write_script(run.cfg, res, fmt, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
-                                 recent_hooks=state.last_hooks(5), log=run.log)
+                                 recent_hooks=memory.last_hooks(run.ctx.day), log=run.log)
     run.ctx.save("script", script)
     run.ctx.set_fingerprint("script", fp)
     return True
@@ -284,7 +290,7 @@ def step_qc(run: Run, force: bool) -> bool:
     _begin(run, "qc")
     script, qc = writer.write_and_review(
         run.cfg, res, script.format, script=script, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
-        recent_topics=state.recent_topics(research.HISTORY_DAYS, run.ctx.day), recent_hooks=state.last_hooks(5),
+        recent_topics=memory.recent_topics(run.ctx.day), recent_hooks=memory.last_hooks(run.ctx.day),
         on_script=lambda s: run.ctx.save("script", s), log=run.log)
     _save_review(run, res, script, qc)
     if not qc.passed:
@@ -350,12 +356,12 @@ def _rewrite_length(run: Run, script: Script, *, seconds: float, goal: float, lo
     run.ctx.invalidate("qc")                 # skrip akan berubah: QC lama tidak berlaku lagi
     _unpublish(run, PACK_TXT)                # caption naskah lama tidak boleh tertinggal di folder hasil
     new = writer.write_script(run.cfg, res, script.format, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
-                              recent_hooks=state.last_hooks(5), issues=[issue], previous=script, log=run.log)
+                              recent_hooks=memory.last_hooks(run.ctx.day), issues=[issue], previous=script, log=run.log)
     run.ctx.save("script", new)
     media.check_cancel(run.cancel)
     new, qc = writer.write_and_review(
         run.cfg, res, script.format, script=new, settings=run.settings, learnings=analyst.prompt_learnings(run.cfg),
-        recent_topics=state.recent_topics(research.HISTORY_DAYS, run.ctx.day), recent_hooks=state.last_hooks(5),
+        recent_topics=memory.recent_topics(run.ctx.day), recent_hooks=memory.last_hooks(run.ctx.day),
         on_script=lambda s: run.ctx.save("script", s), log=run.log)
     _save_review(run, res, new, qc)
     if not qc.passed:
@@ -437,7 +443,7 @@ def step_visuals(run: Run, force: bool) -> bool:
     from . import visuals
     try:
         vis = visuals.build(script, words, run.cfg, run.ctx.dir, settings=run.settings,
-                            exclude=state.recent_clip_ids(30, run.ctx.day), log=run.log, cancel=run.cancel,
+                            exclude=memory.recent_clip_ids(run.ctx.day), log=run.log, cancel=run.cancel,
                             progress=run.progress)
     except visuals.VisualError as e:
         raise StepError("visuals", str(e)) from None
@@ -667,15 +673,18 @@ def _record_upload(run: Run, res: YouTubeResult) -> None:
     run.log("youtube: video di YouTube berasal dari naskah sebelumnya; riwayat dicatat dengan judulnya saja")
 
 
-def _ensure_history(run: Run, res: YouTubeResult) -> None:
-    """Video sudah di YouTube tetapi belum masuk riwayat (mis. proses mati tepat setelah upload): lengkapi."""
+def _ensure_history(run: Run, res: YouTubeResult) -> bool:
+    """Video sudah di YouTube tetapi belum masuk riwayat (mis. proses mati tepat setelah upload): lengkapi.
+    True bila riwayat baru saja dilengkapi."""
     if any(e.date == run.ctx.day.isoformat() and e.video_id == res.video_id for e in state.load_history()):
-        return
+        return False
     try:
         _record_upload(run, res)
         run.log("youtube: riwayat unggahan dilengkapi")
+        return True
     except (OSError, ValueError) as e:
         run.log(f"youtube: PERINGATAN riwayat belum bisa dilengkapi ({e})")
+        return False
 
 
 def step_publish_youtube(run: Run, force: bool) -> bool:
@@ -938,6 +947,8 @@ def step_analyst(run: Run, force: bool) -> bool:
             perf, did = analyst.run(run.cfg, run.settings, today, force=force, log=run.log, progress=run.progress,
                                     on_found=_record_found)
             _weekly_report(run, perf)
+        if not did and not run.reused and perf is not None:
+            run.log("lewati analyst: data performa sebelumnya dipakai")   # YouTube sedang tidak bisa dibaca
     except analyst.AnalystBusy as e:
         run.log(f"analis: {e} Dilewati.")
         return False
@@ -958,7 +969,9 @@ def step_state_update(run: Run, force: bool) -> bool:
         run.log("riwayat: video tanggal ini belum ada di YouTube (yang diunggah sendiri dicatat saat analis "
                 "menemukannya)")
         return False
-    _ensure_history(run, yt)
+    if _ensure_history(run, yt):
+        return True
+    run.log("lewati riwayat: video tanggal ini sudah tercatat")
     return False
 
 
@@ -1043,7 +1056,7 @@ def _run_steps(run: Run, steps: list[str], force: list[str], cancel: threading.E
         if step not in IMPLEMENTED:
             run.log(f"langkah {step} belum tersedia (menyusul di fase berikutnya), dilewati")
             continue
-        run.step = step
+        run.step, run.reused = step, False
         media.check_cancel(cancel)
         run.progress(0.0)
         # langkah rencana ikut diulang bila langkah yang hasilnya ia pakai baru dijalankan; langkah media
@@ -1053,11 +1066,49 @@ def _run_steps(run: Run, steps: list[str], force: list[str], cancel: threading.E
         # genre khusus run ini ikut menentukan sidik hasil; dicatat setelah langkah rencana/media selesai dengannya
         if step in (*PLAN_STEPS, *MEDIA_STEPS) and run.ctx.fingerprint("genre") != run.genre:
             run.ctx.set_fingerprint("genre", run.genre)
-        run.progress(1.0)
-        (run.ran if did else run.skipped).append(step)
         if did:
+            run.ran.append(step)
             ran.add(step)
+        elif run.reused:
+            run.skipped.append(step)
+        else:
+            # langkah ini tidak berlaku untuk run ini (alasannya sudah dicatat langkahnya); dibedakan dari "dipakai
+            # ulang" supaya halaman & catatan run tidak menyebut upload/kiriman yang tidak terjadi sebagai selesai
+            run.idle.append(step)
+            run.log(f"tidak dijalankan: {step}")
+        run.progress(1.0)
     media.check_cancel(cancel)                   # dibatalkan saat langkah terakhir: bukan "selesai"
+
+
+FAILED_TOPICS = "qc_failed_topics"       # kunci inputs.json: topik tanggal ini yang naskahnya gagal QC
+
+
+def _failed_topics(run: Run) -> list[str]:
+    return [t for t in run.ctx.fingerprint(FAILED_TOPICS).splitlines() if t.strip()]
+
+
+def _renew_failed_qc(run: Run, steps: list[str], force) -> list[str]:
+    """Run sungguhan (jadwal, "Jalankan run harian sekarang", CLI tanpa --dry-run): naskah tanggal ini yang sudah
+    gagal QC (setelah ditulis ulang maks. 2x) tidak menghentikan run lagi. Riset diulang untuk topik baru, supaya
+    percobaan ulang jadwal tidak gagal di tempat yang sama dalam hitungan detik. Uji coba tetap berhenti (halaman:
+    "Mulai dari riset lagi"); --force research/script/qc dari pengguna tidak diubah; video tanggal ini yang sudah ada
+    di YouTube tidak pernah diganti."""
+    force = list(force)
+    if run.dry_run or "research" not in steps or {"research", "script", "qc"} & set(force):
+        return force
+    qc = run.ctx.load("qc", QC)
+    if qc is None or qc.passed:
+        return force
+    script, res = run.ctx.load("script", Script), run.ctx.load("research", Research)
+    if script is None or res is None or run.ctx.fingerprint("qc") != fp_qc(script, res, run.cfg):
+        return force                 # QC itu milik naskah/riset lain: langkah yang tertinggal berjalan sendiri
+    yt = run.ctx.load("youtube", YouTubeResult)
+    if (yt is not None and yt.video_id) or _manual_upload(run):
+        return force
+    failed = [*_failed_topics(run), res.chosen.topic, script.topic]
+    run.ctx.set_fingerprint(FAILED_TOPICS, "\n".join(dict.fromkeys(t.strip() for t in failed if t.strip())))
+    run.log("QC naskah tanggal ini gagal di percobaan sebelumnya: riset diulang untuk topik baru")
+    return [*force, "research"]
 
 
 def run_daily(day: date | None = None, *, dry_run: bool = False, force: list[str] = (), only: str | None = None,
@@ -1095,8 +1146,9 @@ def run_daily(day: date | None = None, *, dry_run: bool = False, force: list[str
         if freed:
             run.log(f"bersih-bersih: {freed} berkas sementara dari run lama dihapus")
         _adopt_legacy(run)
-        _run_steps(run, steps, force, cancel)
-        run.log(f"selesai. dijalankan: {', '.join(run.ran) or '-'}; dipakai ulang: {', '.join(run.skipped) or '-'}")
+        _run_steps(run, steps, _renew_failed_qc(run, steps, force), cancel)
+        run.log(f"selesai. dijalankan: {', '.join(run.ran) or '-'}; dipakai ulang: {', '.join(run.skipped) or '-'}"
+                + (f"; tidak dijalankan: {', '.join(run.idle)}" if run.idle else ""))
 
     return _guarded(run, body)
 

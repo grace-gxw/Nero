@@ -32,6 +32,10 @@ VIDEO_TAIL_SECONDS = 0.7      # video berlanjut sebentar setelah suara selesai
 NARRATION_GAPS = 7            # jeda antar-bagian narasi (hook + ±6 segmen + CTA)
 MAX_TTS_RATE = 15             # SPEC 6.7: rate suara dinaikkan paling banyak sampai +15%
 RENDER_SLACK_SECONDS = 3      # SPEC 6.9: durasi video boleh di luar target_seconds sejauh ±3 dtk
+# cadangan di atas batas bawah video: tempo suara sungguhan berbeda-beda per naskah (13 Nov 2026: 112 kata Ardi
+# = video 41,3 dtk, padahal perkiraannya 42,8 dtk), dan naskah yang terlalu pendek baru ketahuan setelah TTS lalu
+# harus ditulis ulang (naskah, QC, SEO lagi)
+MIN_MARGIN_SECONDS = 2.0
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 
@@ -245,7 +249,7 @@ def words_limits(cfg: ChannelConfig) -> tuple[int, int]:
         return lo, hi
     rate = int(cfg.tts.rate.rstrip("%"))
     lo_s, hi_s = cfg.video.target_seconds
-    lo_ok = int(-(-(lo_s - RENDER_SLACK_SECONDS + 0.5 - _overhead(cfg)) // _pace(cfg, rate)))
+    lo_ok = int(-(-(lo_s - RENDER_SLACK_SECONDS + MIN_MARGIN_SECONDS - _overhead(cfg)) // _pace(cfg, rate)))
     hi_ok = int((hi_s - _overhead(cfg)) // _pace(cfg, max(rate, MAX_TTS_RATE)))
     return max(20, min(lo, lo_ok)), max(hi, hi_ok)
 

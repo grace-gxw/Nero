@@ -216,6 +216,7 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
     if not order:
         raise LLMError("Tidak ada provider AI yang boleh dipakai untuk langkah ini.", calls)
 
+    fallback = None             # (call, hasil, masalah): jawaban sesuai skema yang perbaikan isinya gagal
     for provider in _order(order, cfg, s):
         cancel.check_current()
         model = _model_for(provider, cfg, s)
@@ -224,6 +225,7 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
         prompt, fixed, checked, attempt = base, False, False, 0
         t0 = time.time()
         server_failed = False
+        pending = None          # jawaban sesuai skema yang sedang diminta perbaikan isinya: (hasil, masalah)
         while attempt < cfg.llm.max_retries:
             cancel.check_current()
             attempt += 1
@@ -260,6 +262,7 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
             problems = list(check(result) or []) if check else []
             if problems and not checked:
                 checked = True
+                pending = (result, problems)
                 call.notes.append("isi belum memenuhi aturan, diminta perbaikan: " + "; ".join(problems))
                 log(f"LLM {prompt_name}: minta perbaikan ({'; '.join(problems)[:200]})")
                 prompt = base + "\n\n" + render_prompt("_validation_retry", {
@@ -279,6 +282,18 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
         call.seconds = round(time.time() - t0, 2)
         if server_failed:
             _cooldown[(provider, model)] = time.time() + COOLDOWN_SECONDS
+        if pending is not None and fallback is None:
+            # permintaan perbaikan isi gagal (server penuh/timeout, atau jawaban perbaikan tidak sesuai skema). Provider
+            # lain dicoba dulu (mis. QC yang lengkap); bila semuanya gagal, jawaban pertama yang sudah sesuai skema
+            # dipakai dengan catatan, sama seperti perbaikan yang masih belum sempurna.
+            fallback = (call, *pending)
+            call.notes.append(f"perbaikan gagal ({_short(call.error, 160)}); jawaban pertama disimpan sebagai cadangan")
         log(f"LLM {prompt_name}: {provider}/{model} gagal ({_short(call.error, 400)})")
+    if fallback is not None:
+        call, result, problems = fallback
+        call.ok, call.error = True, ""
+        log(f"LLM {prompt_name}: provider lain juga gagal; jawaban pertama {call.provider}/{call.model} dipakai dengan "
+            f"catatan ({'; '.join(problems)[:200]})")
+        return result
     detail = "; ".join(f"{c.provider}: {_short(c.error, 160)}" for c in calls)
     raise LLMError(f"Semua provider AI gagal untuk '{prompt_name}'. {detail}", calls)

@@ -201,7 +201,32 @@ def cmd_schedule_status(_args) -> int:
         print("Channel Otomatis nonaktif: jadwal tidak menjalankan apa pun.")
     else:
         print("Jadwal berjalan di dalam Nero; run harian hanya dimulai selama Nero terbuka.")
+    _print_daily_history(timeutil.today_local(st["timezone"]))
     return 0
+
+
+def _print_daily_history(today: date, days: int = 7) -> None:
+    """Run harian sungguhan beberapa hari terakhir menurut run.log tiap tanggal (catatan yang tidak ditimpa)."""
+    from datetime import timedelta
+
+    from . import runs
+    print(f"\nRun harian {days} hari terakhir (dari data\\channel\\runs\\<tanggal>\\run.log):")
+    for k in range(days - 1, -1, -1):
+        d = today - timedelta(days=k)
+        tries = runs.daily_attempts(d)
+        if not tries:
+            print(f"  {d}  -")
+            continue
+        last = tries[-1]
+        text = f"  {d}  {last['hasil']}  ({len(tries)} percobaan, mulai {tries[0]['mulai']}"
+        text += f", selesai {last['selesai']})" if last["selesai"] else ")"
+        if last["hasil"] == "selesai":
+            made = [s for s in runs.MADE_STEPS if any(s in t["dijalankan"] for t in tries)]
+            text += ("  dibuat hari itu: " + (", ".join(made) or "- (dipakai ulang dari uji coba atau dari percobaan "
+                                                                 "yang terputus)"))
+        elif last["langkah"]:
+            text += f"  di langkah {last['langkah']}: {last['pesan'][:120]}"
+        print(text)
 
 
 def main(argv=None) -> int:

@@ -91,6 +91,9 @@ class RunJob:
                 for step, name in _RESULT_NAME.items():
                     if name == m.group(1) and step in self.steps:
                         self.steps[step]["reused"] = True
+            m = re.match(r"tidak dijalankan: (\w+)$", text)
+            if m and m.group(1) in self.steps:          # mis. upload API nonaktif, Telegram belum diisi, uji coba
+                self.steps[m.group(1)]["idle"] = True
             m = re.match(r"(telegram \(kirim uji\)|youtube \(unggah uji\)|analis|laporan mingguan) gagal: (.*)",
                          text)
             if m:                                   # tindakan pengguna yang tidak memakai penanda run
@@ -114,7 +117,10 @@ class RunJob:
                 return
             self.current = step
             st["progress"] = round(max(0.0, min(1.0, frac)), 3)
-            st["state"] = ("dipakai" if st.get("reused") else "selesai") if frac >= 1 else "proses"
+            if frac < 1:
+                st["state"] = "proses"
+            else:
+                st["state"] = "lewat" if st.get("idle") else "dipakai" if st.get("reused") else "selesai"
 
     # ------------------------------------------------------------ thread
     def start(self) -> None:

@@ -13,11 +13,12 @@ from __future__ import annotations
 import os
 import re
 import traceback
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import common
 
-from . import config, state
+from . import config, state, timeutil
 from .runctx import FINGERPRINTS, OUTPUTS, RunContext, lock_active, sha
 from .schemas import QC, Metadata, RenderInfo, Research, Script, TelegramSent, Visuals, Words, YouTubeResult
 
@@ -26,6 +27,8 @@ SOURCED = ("seo", "tts", "visuals", "render", "manual_pack")      # hasil yang d
 RUN_FILES = ("final.mp4", "final.jpg", "voice.mp3", "captions.srt")   # boleh diambil halaman dari folder run
 LOG_TAIL_BYTES = 64 * 1024
 _FAIL = re.compile(r"^\d{2}:\d{2}:\d{2} (GAGAL|DIBATALKAN) di langkah (\w+)(?::\s*(.*))?$")
+_START = re.compile(r"^(\d{2}:\d{2}:\d{2}) mulai run \S+ \((uji coba|sungguhan)\)")
+_DONE = re.compile(r"^(\d{2}:\d{2}:\d{2}) selesai\. dijalankan: ([^;]*);")
 
 
 def parse_day(text: str) -> date | None:
@@ -62,6 +65,67 @@ def last_run_lines(ctx: RunContext) -> list[str]:
     lines = [x for x in _log_lines(ctx) if re.match(r"^\d{2}:\d{2}:\d{2} ", x)]
     start = max((i for i, x in enumerate(lines) if " mulai run " in x), default=0)
     return lines[start:]
+
+
+# langkah yang membuat isi video; uji coba sesudah run harian yang menjalankan salah satunya mengganti hasilnya
+MADE_STEPS = ("research", "script", "qc", "seo", "tts", "visuals", "render")
+# penanda tindakan pengguna (unggah uji, cek status, kirim uji) yang ditulis tanpa baris "mulai run"
+_ACTION_DONE = ("(unggah uji)", "(cek status)", "(kirim uji ke Telegram)")
+
+
+def _segments(ctx: RunContext) -> list[dict]:
+    """Run tanggal ini menurut run.log, urut waktu: [{jenis, mulai, selesai, hasil, langkah, pesan, dijalankan}].
+    jenis: sungguhan | uji coba. hasil: selesai | gagal | dibatalkan | berjalan | terputus."""
+    lines = [x for x in _log_lines(ctx) if re.match(r"^\d{2}:\d{2}:\d{2} ", x)]
+    out: list[dict] = []
+    cur: dict | None = None
+    for line in lines:
+        m = _START.match(line)
+        if m:
+            cur = {"jenis": m.group(2), "mulai": m.group(1), "selesai": "", "hasil": "", "langkah": "", "pesan": "",
+                   "dijalankan": []}
+            out.append(cur)
+            continue
+        if " mulai unggah uji " in line:
+            cur = None                       # unggah uji atas perintah pengguna: bukan bagian run sebelumnya
+            continue
+        if cur is None or cur["hasil"] or line.rstrip().endswith(_ACTION_DONE):
+            continue
+        done = _DONE.match(line)
+        if done:
+            ran = [s.strip() for s in done.group(2).split(",") if s.strip() and s.strip() != "-"]
+            cur.update(selesai=done.group(1), hasil="selesai", dijalankan=ran)
+            continue
+        fail = _FAIL.match(line)
+        if fail:
+            cur.update(selesai=line[:8], hasil="dibatalkan" if fail.group(1) == "DIBATALKAN" else "gagal",
+                       langkah=fail.group(2), pesan=(fail.group(3) or "")[:300])
+    for i, a in enumerate(out):
+        if not a["hasil"]:
+            # tanpa penanda akhir: run terakhir yang masih memegang kunci = berjalan; selain itu Nero/laptop mati
+            a["hasil"] = "berjalan" if i == len(out) - 1 and locked(ctx) else "terputus"
+    return out
+
+
+def run_kind(ctx: RunContext) -> str:
+    """Asal hasil tanggal ini: "sungguhan" bila run harian selesai dan uji coba sesudahnya hanya memakai ulang
+    hasilnya; selain itu jenis run terakhir ("uji coba" / "sungguhan"), atau "" (belum ada)."""
+    segs = _segments(ctx)
+    if not segs:
+        return ""
+    done = [i for i, s in enumerate(segs) if s["jenis"] == "sungguhan" and s["hasil"] == "selesai"]
+    if done and all(s["hasil"] == "selesai" and not set(s["dijalankan"]) & set(MADE_STEPS)
+                    for s in segs[done[-1] + 1:]):
+        return "sungguhan"
+    return segs[-1]["jenis"]
+
+
+def daily_attempts(day: date) -> list[dict]:
+    """Run harian sungguhan tanggal ini menurut run.log (catatan yang tidak ditimpa, untuk membuktikan run harian
+    berjalan): [{mulai, selesai, hasil, langkah, pesan, dijalankan}], urut waktu. hasil: selesai | gagal |
+    dibatalkan | berjalan | terputus."""
+    return [{k: v for k, v in s.items() if k != "jenis"} for s in _segments(RunContext(day, echo=None))
+            if s["jenis"] == "sungguhan"]
 
 
 def failure(ctx: RunContext) -> dict | None:
@@ -137,6 +201,7 @@ def run_summary(day: date) -> dict:
     topic = script.topic if script else (research.chosen.topic if research else "")
     return {
         "date": day.isoformat(),
+        "kind": run_kind(ctx),
         "topic": topic,
         "title": meta.title if meta else "",
         "format": script.format if script else "",
@@ -154,7 +219,8 @@ def run_summary(day: date) -> dict:
 
 
 def _broken(day: date, e: Exception) -> dict:
-    return {"date": day.isoformat(), "topic": "", "title": "", "format": "", "qc": None, "render": None,
+    return {"date": day.isoformat(), "kind": "", "topic": "", "title": "", "format": "", "qc": None,
+            "render": None,
             "stale_video": False, "uploaded": None, "running": False, "updated": 0, "video": "", "thumb": "",
             "captions": "",
             "published": False, "failed": {"step": "-", "cancelled": False, "message": f"Folder run rusak: {e}"[:300]}}
@@ -248,8 +314,24 @@ def run_detail(day: date) -> dict | None:
         "pack": _pack(ctx, script),                      # caption TikTok & Instagram yang masih berlaku
         "telegram": _telegram_sent(ctx, script),
         "youtube_stale": _youtube_stale(ctx, script),
+        "manual_publish": _manual_publish(day),
         **_upload_fields(day, summary),
     }
+
+
+def _manual_publish(day: date) -> dict | None:
+    """Saran untuk unggah manual (jam tayang & penonton dari pengaturan), karena tanpa upload API Nero tidak
+    menjadwalkan apa pun. Jam tayang tanggal run; bila sudah lewat (atau < 15 menit lagi), jam tayang berikutnya
+    (sama dengan aturan upload otomatis). None bila pengaturan tidak terbaca."""
+    try:
+        cfg = config.load_config()
+    except config.ConfigError:
+        return None
+    sch = cfg.schedule
+    at = datetime.combine(day, timeutil.parse_hhmm(sch.publish_time), tzinfo=ZoneInfo(sch.timezone))
+    slot = max(at, timeutil.publish_at(sch.publish_time, sch.timezone))
+    return {"publish_time": sch.publish_time, "publish_at": slot.isoformat(), "made_for_kids": cfg.youtube.made_for_kids,
+            "api_upload": cfg.youtube.api_upload}
 
 
 def _upload_fields(day: date, summary: dict) -> dict:

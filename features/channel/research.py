@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlsplit
 import requests
 from rapidfuzz import fuzz
 
-from . import cancel, llm, state
+from . import cancel, llm, memory
 from .config import ChannelConfig
 from .schemas import Candidate, DuplicateCheck, QueryPlan, Research, ResearchDraft, Source
 
@@ -221,7 +221,7 @@ def _numbered(materials: list[Source]) -> list[dict]:
 def run(cfg: ChannelConfig, today: date, *, settings: dict | None = None, learnings: str = "",
         avoid_topics: list[str] = (), log=print) -> Research:
     """avoid_topics: topik yang juga harus dihindari (mis. topik hari ini sebelum riset diulang)."""
-    recent = [*state.recent_topics(HISTORY_DAYS, today), *[t for t in avoid_topics if t]]
+    recent = [*memory.recent_topics(today, HISTORY_DAYS), *[t for t in avoid_topics if t]]
     from . import youtube  # sinyal minat dari YouTube (opsional, hanya bila kata kunci diisi & YouTube terhubung)
     trends = youtube.trending_titles(cfg, settings=settings, log=log)
     common_vars = {"niche": cfg.channel.niche, "audience": cfg.channel.audience, "tone": cfg.channel.tone,

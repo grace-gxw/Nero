@@ -172,10 +172,10 @@ class Jadwal(ScheduleSandbox):
         self.sch.tick(at(13, 5))
         jobs._job = None                                              # Nero dibuka ulang: pekerjaannya hilang
         sch2 = scheduler.Scheduler()
-        self.assertEqual(sch2.tick(at(13, 5, 30)), "menunggu_ulang")
+        self.assertEqual(sch2.tick(at(13, 5, 30), allow_start=False), "masa_tunggu")
         self.assertEqual(self.st()["state"], "gagal")
         self.assertIn("terputus", self.st()["note"])
-        self.assertEqual(sch2.tick(at(13, 6, 30)), "mulai")          # dilanjutkan dari checkpoint
+        self.assertEqual(sch2.tick(at(13, 5, 32)), "mulai")          # dilanjutkan dari checkpoint begitu Nero siap
 
     def test_kunci_proses_lain_tidak_menghabiskan_jatah(self):
         self.enable(run_time="05:00")
@@ -270,9 +270,9 @@ class PerbaikanReview(ScheduleSandbox):
         scheduler._save({"day": day.isoformat(), "state": "berjalan", "attempts": 1, "job_id": "LAMA"})
         with mock.patch.object(runctx, "started_after", return_value=True):   # proses itu dibuat setelah kunci ditulis
             self.assertFalse(runctx.lock_active(ctx.path(".lock")))
-            self.assertEqual(self.sch.tick(at(13, 6)), "menunggu_ulang")
+            self.assertEqual(self.sch.tick(at(13, 6), allow_start=False), "masa_tunggu")
             self.assertIn("terputus", self.st()["note"])
-            self.assertEqual(self.sch.tick(at(13, 7, 1)), "mulai")
+            self.assertEqual(self.sch.tick(at(13, 6, 2)), "mulai")
 
     def test_waktu_pembuatan_proses(self):
         import time
