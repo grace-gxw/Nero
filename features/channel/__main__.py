@@ -17,6 +17,7 @@ CLI Channel Otomatis (jalankan dari folder Nero):
   .venv\\Scripts\\python -m features.channel analyst [--cached]  perbarui analisis performa & learnings.md
   .venv\\Scripts\\python -m features.channel weekly-report [--send] tampilkan / kirim laporan mingguan
   .venv\\Scripts\\python -m features.channel analytics-clear     hapus data performa yang disimpan Nero
+  .venv\\Scripts\\python -m features.channel schedule-status     jadwal harian: keadaan run hari ini & run berikutnya
 
 --only: plan = riset s.d. SEO; media = suara, visual, render; video = plan + media; atau satu nama langkah.
 """
@@ -27,7 +28,7 @@ import json
 import sys
 from datetime import date
 
-from . import analyst, config, genres, llm, pipeline, state, telegram, timeutil, youtube
+from . import analyst, config, genres, llm, pipeline, scheduler, state, telegram, timeutil, youtube
 from .runctx import STEPS, RunLocked
 from .schemas import Ping
 
@@ -191,6 +192,18 @@ def cmd_analytics_clear(_args) -> int:
     return 0
 
 
+def cmd_schedule_status(_args) -> int:
+    st = scheduler.status()
+    st.pop("thread", None)
+    st.pop("last", None)
+    print(json.dumps(st, indent=2, ensure_ascii=False))
+    if not st["enabled"]:
+        print("Channel Otomatis nonaktif: jadwal tidak menjalankan apa pun.")
+    else:
+        print("Jadwal berjalan di dalam Nero; run harian hanya dimulai selama Nero terbuka.")
+    return 0
+
+
 def main(argv=None) -> int:
     _utf8_console()
     ap = argparse.ArgumentParser(prog="python -m features.channel", description="Nero · Channel Otomatis")
@@ -238,6 +251,7 @@ def main(argv=None) -> int:
     w.set_defaults(func=cmd_weekly_report)
     sub.add_parser("analytics-clear", help="hapus data performa yang disimpan Nero").set_defaults(
         func=cmd_analytics_clear)
+    sub.add_parser("schedule-status", help="keadaan jadwal harian").set_defaults(func=cmd_schedule_status)
     args = ap.parse_args(argv)
     try:
         return args.func(args)

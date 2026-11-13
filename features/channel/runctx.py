@@ -44,13 +44,40 @@ FINGERPRINTS = "inputs.json"
 
 
 def lock_active(path: str) -> bool:
-    """Kunci run masih dipegang proses yang hidup dan belum basi (aturan yang sama untuk run & halaman)."""
+    """Kunci run masih dipegang proses yang hidup dan belum basi (aturan yang sama untuk run & halaman). PID yang
+    sudah dipakai proses lain (mis. setelah komputer dinyalakan ulang) dikenali dari waktu proses itu dibuat: proses
+    yang dibuat setelah kunci ditulis bukan pemiliknya."""
     try:
         with open(path, encoding="utf-8") as f:
             owner = int(f.read().strip() or 0)
-        return pid_alive(owner) and time.time() - os.path.getmtime(path) <= LOCK_STALE_SECONDS
+        mtime = os.path.getmtime(path)
+        return pid_alive(owner) and time.time() - mtime <= LOCK_STALE_SECONDS and not started_after(owner, mtime)
     except (OSError, ValueError):
         return False
+
+
+def started_after(pid: int, ts: float) -> bool:
+    """Proses `pid` dibuat setelah waktu `ts` (detik epoch)? Tidak diketahui (bukan Windows, akses ditolak) = False."""
+    if os.name != "nt" or pid <= 0:
+        return False
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE               # handle 64-bit tidak boleh terpotong
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = k32.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]     # dibuat, keluar, kernel, user
+        if not k32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+            return False
+        created = (times[0].dwHighDateTime << 32 | times[0].dwLowDateTime) / 1e7 - 11644473600
+        return created > ts + 1                              # sisa 1 dtk: resolusi waktu berkas
+    finally:
+        k32.CloseHandle(handle)
 
 
 def downstream(step: str) -> list[str]:

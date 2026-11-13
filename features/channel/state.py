@@ -264,8 +264,15 @@ def prune_runs(today: date, now: float | None = None, keep: tuple[str, ...] = ()
             day = date.fromisoformat(name)
         except ValueError:
             continue
-        if (today - day).days <= KEEP_RUN_DAYS or name in keep or os.path.exists(os.path.join(root, name, ".lock")):
+        if (today - day).days <= KEEP_RUN_DAYS or name in keep:
             continue
+        lock = os.path.join(root, name, ".lock")
+        if os.path.exists(lock):
+            from .runctx import lock_active  # runctx mengimpor modul ini: impor di dalam fungsi
+            if lock_active(lock):
+                continue                                 # run tanggal itu sedang berjalan
+            with contextlib.suppress(OSError):
+                remove_retry(lock)                       # sisa run yang terputus (Nero/laptop mati) dan tidak diulang
         for part in (*_HEAVY_DIRS, *_HEAVY_FILES):
             path = os.path.join(root, name, part)
             if os.path.exists(path):

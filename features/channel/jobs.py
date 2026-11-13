@@ -1,9 +1,12 @@
 """
 Nero · Channel Otomatis - menjalankan pipeline dari halaman Nero sebagai pekerjaan latar.
 
-Hanya satu run sekaligus di proses ini (run dari CLI/jadwal dijaga kunci run per tanggal). Halaman membaca
-progres lewat polling (GET /api/channel/state). Halaman menjalankan uji coba (dry-run: tanpa upload dan tanpa
-kiriman Telegram) dan, atas perintah pengguna, unggah uji ke YouTube sebagai private (mode "upload").
+Hanya satu run sekaligus di proses ini (run dari CLI dijaga kunci run per tanggal). Halaman membaca progres lewat
+polling (GET /api/channel/state). Halaman menjalankan uji coba (dry-run: tanpa upload dan tanpa kiriman Telegram) dan,
+atas perintah pengguna, unggah uji ke YouTube sebagai private (mode "upload"). Jadwal harian (scheduler.py) memakai
+pekerjaan yang sama dengan mode "daily" (run sungguhan), sehingga progresnya tampil di halaman.
+
+Selama pekerjaan berjalan, Windows diminta tidak tidur otomatis (power.keep_awake).
 """
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ import traceback
 import uuid
 from datetime import date
 
-from . import pipeline
+from . import pipeline, power
 from .runctx import STEPS
 
 # label tahap untuk halaman
@@ -30,9 +33,11 @@ _RESULT_NAME = {"research": "research", "script": "script", "qc": "qc", "seo": "
                 "notify": "telegram", "analyst": "analyst"}
 # upload = unggah uji ke YouTube (private); notify = kirim paket ke Telegram. Keduanya bukan dry-run.
 # analyst = perbarui analisis performa; report = kirim laporan mingguan sekarang. Keduanya tanpa folder run.
-MODES = ("plan", "video", "media", "upload", "notify", "analyst", "report")
+# daily = run harian sungguhan (semua langkah), hanya dimulai oleh jadwal (scheduler.py).
+MODES = ("plan", "video", "media", "upload", "notify", "analyst", "report", "daily")
 GLOBAL_MODES = ("analyst", "report")
 LOG_LINES = 300
+LISTENERS: list = []                                 # fn(job) dipanggil setiap pekerjaan selesai
 _PREFIX = re.compile(r"^\[channel\]\s*(?:\d{2}:\d{2}:\d{2}\s+)?")
 
 
@@ -49,6 +54,8 @@ def steps_for(mode: str) -> list[str]:
         return ["analyst"]
     if mode == "report":
         return ["weekly_report"]
+    if mode == "daily":
+        return [s for s in pipeline.resolve_steps(None) if s in pipeline.IMPLEMENTED]
     # uji coba: langkah upload hanya mencatat "tidak diunggah", jadi tidak ditampilkan
     return [s for s in pipeline.resolve_steps(mode) if s in pipeline.IMPLEMENTED and s not in pipeline.PUBLISH_STEPS]
 
@@ -115,6 +122,10 @@ class RunJob:
         self.thread.start()
 
     def _run(self) -> None:
+        with power.keep_awake(self.echo):            # laptop tidak tidur otomatis di tengah render/upload
+            self._work()
+
+    def _work(self) -> None:
         try:
             if self.mode == "upload":
                 code = pipeline.upload_test(self.day, echo=self.echo, cancel=self.cancel,
@@ -126,6 +137,9 @@ class RunJob:
                 code = pipeline.analyze_now(echo=self.echo, cancel=self.cancel, on_progress=self.on_progress)
             elif self.mode == "report":
                 code = pipeline.weekly_report_now(echo=self.echo, cancel=self.cancel, on_progress=self.on_progress)
+            elif self.mode == "daily":
+                code = pipeline.run_daily(self.day, dry_run=False, echo=self.echo, cancel=self.cancel,
+                                          on_progress=self.on_progress)
             else:
                 code = pipeline.run_daily(self.day, dry_run=True, only=self.mode, force=self.force,
                                           genre=self.genre, echo=self.echo, cancel=self.cancel,
@@ -166,6 +180,11 @@ class RunJob:
             for st in self.steps.values():
                 if st["state"] in ("antri", "proses") and self.status != "selesai":
                     st["state"] = "batal" if self.status == "batal" else "lewat"
+        for fn in LISTENERS[:]:                      # mis. jadwal: catat hasil run harian / mulai run yang menunggu
+            try:
+                fn(self)
+            except Exception:  # noqa: BLE001  pendengar yang gagal tidak boleh mengganggu pekerjaan
+                traceback.print_exc()
 
     def running(self) -> bool:
         return self.status == "proses"

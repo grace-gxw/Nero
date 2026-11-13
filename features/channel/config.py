@@ -81,14 +81,18 @@ class VideoCfg(_Section):
 class ScheduleCfg(_Section):
     timezone: str = "Asia/Jakarta"
     publish_time: str = "18:00"
+    # jam run harian dimulai (jadwal di dalam Nero, Fase I-8). Bawaan sama dengan cron SPEC bagian 9 (05.17 WIB):
+    # cukup waktu untuk membuat video dan meninjaunya sebelum jam tayang. Bila Nero baru menyala setelah jam ini, run
+    # hari itu dikejar.
+    run_time: str = "05:17"
     videos_per_day: int = Field(1, ge=1, le=1)   # saat ini hanya 1 video per hari
 
-    @field_validator("publish_time")
+    @field_validator("publish_time", "run_time")
     @classmethod
-    def _hhmm(cls, v):
+    def _hhmm(cls, v, info):
         m = re.fullmatch(r"([01]?\d|2[0-3])[:.]([0-5]\d)", v.strip())
         if not m:
-            raise ValueError("publish_time harus berbentuk JJ:MM, mis. 18:00")
+            raise ValueError(f"{info.field_name} harus berbentuk JJ:MM, mis. 18:00")
         return f"{int(m.group(1)):02d}:{m.group(2)}"
 
     @field_validator("timezone")

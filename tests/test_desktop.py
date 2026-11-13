@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -46,6 +47,9 @@ class Ikon(unittest.TestCase):
             mock.patch.object(desktop, "_folder", lambda csidl: self.dirs[csidl]),
             mock.patch.object(desktop, "ICON_PATH", os.path.join(data, "nero.ico")),
             mock.patch.object(desktop, "STATE_PATH", os.path.join(data, "desktop.json")),
+            # registry Windows milik pengguna tidak boleh dibaca atau diubah tes
+            mock.patch.object(desktop, "_enable_in_windows"),
+            mock.patch.object(desktop, "startup_disabled", lambda: False),
         ]
         for p in self.patches:
             p.start()
@@ -59,7 +63,7 @@ class Ikon(unittest.TestCase):
         return os.path.join(self.dirs[csidl], "Nero.lnk")
 
     def test_buat_ikon_dan_buka_otomatis(self):
-        self.assertEqual(desktop.status(), {"shortcut": False, "autostart": False})
+        self.assertEqual(desktop.status(), {"shortcut": False, "autostart": False, "autostart_disabled": False})
         desktop.create_shortcuts()
         self.assertTrue(os.path.isfile(self.lnk(desktop._PROGRAMS)))
         self.assertGreater(os.path.getsize(desktop.ICON_PATH), 0)
@@ -69,11 +73,42 @@ class Ikon(unittest.TestCase):
         self.assertEqual(os.path.normcase(workdir), os.path.normcase(desktop.APP_DIR))
 
         desktop.set_autostart(True)
-        self.assertEqual(desktop.status(), {"shortcut": True, "autostart": True})
+        self.assertEqual(desktop.status(), {"shortcut": True, "autostart": True, "autostart_disabled": False})
+        desktop._enable_in_windows.assert_called_once()           # dinyalakan pengguna: tanda Windows dihapus
+        with mock.patch.object(desktop, "startup_disabled", lambda: True):
+            # ikon ada, tetapi dimatikan di Startup apps Windows: tidak dibuka otomatis
+            self.assertEqual(desktop.status(), {"shortcut": True, "autostart": False, "autostart_disabled": True})
         self.assertEqual(read_lnk(self.lnk(desktop._STARTUP))[1], f'"{desktop.APP_PY}" --background')
         desktop.set_autostart(False)
         desktop.set_autostart(False)  # sudah mati: tidak galat
-        self.assertEqual(desktop.status(), {"shortcut": True, "autostart": False})
+        self.assertEqual(desktop.status(), {"shortcut": True, "autostart": False, "autostart_disabled": False})
+
+    def test_buka_otomatis_dimatikan_di_windows(self):
+        values = {}
+
+        class Key:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def query(_key, name):
+            if name not in values:
+                raise OSError("tidak ada")
+            return values[name], 3
+
+        fake = mock.MagicMock(HKEY_CURRENT_USER=1, OpenKey=lambda *a: Key(), QueryValueEx=query)
+        self.patches[-1].stop()                                        # fungsi aslinya, dengan registry palsu
+        try:
+            with mock.patch.dict(sys.modules, {"winreg": fake}), mock.patch.object(desktop, "SUPPORTED", True):
+                self.assertFalse(desktop.startup_disabled())          # belum pernah diubah di Windows
+                values["Nero.lnk"] = bytes([2]) + bytes(11)
+                self.assertFalse(desktop.startup_disabled())          # diaktifkan
+                values["Nero.lnk"] = bytes([3]) + bytes(11)
+                self.assertTrue(desktop.startup_disabled())           # dimatikan di Startup apps
+        finally:
+            self.patches[-1].start()
 
     def test_folder_dipindah(self):
         with open(desktop.STATE_PATH, "w", encoding="utf-8") as f:
@@ -85,6 +120,15 @@ class Ikon(unittest.TestCase):
             desktop.refresh_if_moved()
         shortcuts.assert_called_once()
         autostart.assert_not_called()  # buka otomatis tidak pernah dinyalakan
+
+    def test_folder_dipindah_tidak_mengubah_pilihan_windows(self):
+        with open(desktop.STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"app_dir": r"D:\lama\ClipMaker"}, f)
+        os.makedirs(self.dirs[desktop._STARTUP])
+        open(self.lnk(desktop._STARTUP), "w").close()
+        with mock.patch.object(desktop, "set_autostart") as autostart, mock.patch("builtins.print"):
+            desktop.refresh_if_moved()
+        autostart.assert_called_once_with(True, by_user=False)
         with open(desktop.STATE_PATH, encoding="utf-8") as f:
             self.assertEqual(json.load(f)["app_dir"], desktop.APP_DIR)
 

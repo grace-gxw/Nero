@@ -21,9 +21,11 @@ Nero · Channel Otomatis - rute /api/channel/* (didaftarkan app.py).
   POST /analytics/run           perbarui analisis performa sebagai pekerjaan latar
   POST /analytics/report        kirim laporan mingguan sekarang sebagai pekerjaan latar
   POST /analytics/clear         hapus data performa yang disimpan Nero (tidak mengubah apa pun di YouTube)
+  POST /schedule/run            jalankan run harian hari ini sekarang (hanya saat Channel Otomatis aktif)
 
 Selama settings.channel.enabled = false, fitur ini tidak menjalankan apa pun di latar belakang; halaman hanya
-menjalankan uji coba dan unggah uji (private) atas permintaan pengguna.
+menjalankan uji coba dan unggah uji (private) atas permintaan pengguna. Saat aktif, jadwal harian (scheduler.py)
+menjalankan run sungguhan setiap hari pada schedule.run_time selama Nero terbuka.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 import common
 
-from . import analyst, config, genres, jobs, runs, state, telegram, timeutil, youtube
+from . import analyst, config, genres, jobs, runs, scheduler, state, telegram, timeutil, youtube
 from .config import ID, SETTINGS, ConfigError
 from .runctx import RunLocked
 
@@ -84,7 +86,11 @@ def post_settings():
         patch = common._merge(genres.as_patch(gid), patch)    # isian sendiri menimpa isian genre
     try:
         if patch:
-            config.save_config(patch)            # divalidasi utuh dulu; gagal = tidak ada yang tersimpan
+            cfg = config.save_config(patch)      # divalidasi utuh dulu; gagal = tidak ada yang tersimpan
+            job = jobs.current()
+            if not cfg.enabled and job is not None and job.running() and job.mode == "daily":
+                jobs.cancel()                    # dimatikan di tengah run harian: tidak ada upload/kiriman lagi
+            scheduler.get().kick()               # mis. baru diaktifkan atau jam run diganti
         keys, clear = body.get("keys"), body.get("clear_keys")
         if isinstance(keys, dict) or isinstance(clear, list):
             keys = {k: v for k, v in (keys if isinstance(keys, dict) else {}).items() if k not in OAUTH_ONLY_KEYS}
@@ -131,11 +137,13 @@ def get_state():
         keys = config.key_status()
         enabled, niche, tz = cfg.enabled, cfg.channel.niche, cfg.schedule.timezone
         ready = _readiness(cfg, keys)
+        sched = scheduler.status(cfg)
     except ConfigError as e:
         return jsonify(error=str(e)), 500
     return jsonify(job=job.snapshot() if job else None, runs=runs.list_runs(20),
                    today=timeutil.today_local(tz).isoformat(), enabled=enabled, niche=niche, ready=ready,
-                   youtube=youtube.status(), telegram={"configured": telegram.configured()})
+                   youtube=youtube.status(), telegram={"configured": telegram.configured()},
+                   schedule={**sched, "autostart": _autostart()})
 
 
 @bp.post("/run")
@@ -145,8 +153,8 @@ def post_run():
     from . import pipeline
     body = request.get_json(force=True, silent=True) or {}
     mode = str(body.get("mode") or "video")
-    if mode in ("upload", "notify", *jobs.GLOBAL_MODES):
-        return jsonify(error="Unggah, kirim ke Telegram, dan analisis memakai tombolnya masing-masing."), 400
+    if mode in ("upload", "notify", "daily", *jobs.GLOBAL_MODES):
+        return jsonify(error="Unggah, kirim ke Telegram, analisis, dan run harian memakai tombolnya masing-masing."), 400
     genre = str(body.get("genre") or "") or None
     force = body.get("force") or []
     if not isinstance(force, list):
@@ -400,19 +408,53 @@ def post_analytics_clear():
     return jsonify(ok=True, removed=removed)
 
 
+# --------------------------------------------------------------------------
+# Jadwal harian (Fase I-8)
+# --------------------------------------------------------------------------
+def _autostart() -> bool | None:
+    """Nero dibuka otomatis saat Windows menyala (ikon di folder Startup)? None = bukan Windows / tidak diketahui."""
+    try:
+        import desktop
+        st = desktop.status()
+    except Exception:  # noqa: BLE001  status ikon tidak penting untuk halaman ini
+        return None
+    return None if st is None else bool(st.get("autostart"))      # sudah memperhitungkan Startup apps Windows
+
+
+@bp.post("/schedule/run")
+def post_schedule_run():
+    """Mulai run harian hari ini sekarang (tanpa menunggu jam run). Hanya saat Channel Otomatis aktif."""
+    try:
+        scheduler.get().run_now()
+    except ConfigError as e:
+        return jsonify(error=str(e)), 400
+    except jobs.JobBusy as e:
+        return jsonify(error=str(e)), 409
+    job = jobs.current()
+    return jsonify(ok=True, job=job.snapshot() if job else None, schedule=scheduler.status())
+
+
+def _kick_schedule(_job) -> None:
+    scheduler.get().kick()
+
+
 def start():
-    """Dipanggil sekali saat Nero dibuka. Jadwal harian dibuat di fase berikutnya; run dari halaman memakai
-    thread sendiri per run (jobs.py)."""
+    """Dipanggil sekali saat Nero dibuka: menyalakan jadwal harian (scheduler.py). Selama Channel Otomatis nonaktif,
+    jadwal hanya memeriksa pengaturan setiap menit dan tidak menjalankan apa pun."""
+    if _kick_schedule not in jobs.LISTENERS:
+        jobs.LISTENERS.append(_kick_schedule)        # pekerjaan selesai: hasil run harian dicatat segera
+    scheduler.get().start()
 
 
 def summary():
     """Ringkasan untuk Beranda."""
     try:
-        enabled = config.load_config().enabled
+        cfg = config.load_config()
+        enabled, run_time = cfg.enabled, cfg.schedule.run_time.replace(":", ".")
     except ConfigError:
-        enabled = False
+        enabled, run_time = False, ""
     return {"busy": 1 if jobs.busy() else 0, "queue": 0, "stats": [
-        {"label": "Status", "value": "Aktif" if enabled else "Nonaktif"},
+        {"label": "Status", "value": f"Aktif · tiap {run_time}" if enabled else "Nonaktif"},
         {"label": "Video siap", "value": runs.count_ready()},
         {"label": "Diunggah", "value": len(state.load_history())},
     ]}

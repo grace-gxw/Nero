@@ -355,7 +355,8 @@ class BersihBersih(ChannelSandbox):
         n = state.prune_runs(DAY, keep=("2026-11-01",))
         self.assertEqual(n, 1)                                   # hanya cache stok; folder 'keep' tidak disentuh
         self.assertTrue(os.path.exists(os.path.join(old, "voice.wav")))
-        open(os.path.join(old, ".lock"), "w").close()
+        with open(os.path.join(old, ".lock"), "w") as f:
+            f.write(str(os.getpid()))                            # kunci milik proses yang hidup
         self.assertEqual(state.prune_runs(DAY), 0)               # run yang sedang berjalan tidak disentuh
         os.remove(os.path.join(old, ".lock"))
         n = state.prune_runs(DAY)

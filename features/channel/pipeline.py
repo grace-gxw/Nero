@@ -27,7 +27,7 @@ import threading
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import common
 
@@ -152,6 +152,21 @@ def fp_render(words: Words, vis: Visuals, cfg: ChannelConfig, day: date) -> str:
 # --------------------------------------------------------------------------
 # Pembantu
 # --------------------------------------------------------------------------
+def switched_off(run: Run, what: str, flag: Callable[[ChannelConfig], bool]) -> bool:
+    """Sakelar yang menyala saat run sungguhan dimulai (Channel Otomatis aktif + `flag`, mis. upload otomatis) kini
+    dimatikan di pengaturan: langkah yang mengunggah/mengirim dilewati. Uji coba tidak terpengaruh."""
+    if run.dry_run or not (run.cfg.enabled and flag(run.cfg)):
+        return False
+    try:
+        live = config.load_config(common.load_settings())
+    except ConfigError:
+        live = None
+    if live is not None and live.enabled and flag(live):
+        return False
+    run.log(f"{what}: dimatikan di pengaturan selama run berjalan; dilewati")
+    return True
+
+
 def _need(run: Run, name: str, schema, step: str):
     got = run.ctx.load(name, schema)
     if got is None:
@@ -587,10 +602,34 @@ def _report_upload(run: Run, res: YouTubeResult) -> None:
         run.log(f"youtube: PERINGATAN playlist: {res.playlist_error}")
 
 
+SLOT_SCAN_DAYS = 3
+
+
+def _slot_taken(run: Run, at) -> str:
+    """Tanggal run lain yang videonya sudah dijadwalkan tayang pada waktu `at` (UTC sama), atau ""."""
+    want = timeutil.to_rfc3339_utc(at)
+    for k in range(-SLOT_SCAN_DAYS, SLOT_SCAN_DAYS + 1):
+        day = run.ctx.day + timedelta(days=k)
+        if day == run.ctx.day:
+            continue
+        yt = RunContext(day, echo=None).load("youtube", YouTubeResult)
+        got = youtube._parse_time(yt.publish_at) if yt is not None and yt.video_id else None
+        if got is not None and timeutil.to_rfc3339_utc(got) == want:
+            return day.isoformat()
+    return ""
+
+
 def _publish(run: Run, *, test: bool) -> YouTubeResult:
     step = "publish_youtube"
     script, meta, info, vis = _upload_ready(run, step)
     privacy, at, why = youtube.privacy_plan(run.cfg, needs_review=info.needs_review, test=test)
+    taken = _slot_taken(run, at) if at is not None else ""
+    if taken:
+        # run yang terlambat (dikejar setelah jam tayang) digeser ke besok, tetapi slot itu milik video run lain:
+        # tidak menayangkan dua video bersamaan. Video ini private tanpa jadwal; pengguna yang menayangkannya.
+        why = (f"jam tayang {timeutil.format_local(at)} sudah dipakai video run {taken}; private tanpa jadwal "
+               "(tayangkan sendiri di YouTube Studio)")
+        at = None
     run.log(f"youtube: {why}")
     # deskripsi disusun dari visual yang sama dengan isi video (kredit stok, pengungkapan AI)
     summary = meta.summary or meta.description.split("\n\nSumber:", 1)[0]
@@ -662,6 +701,8 @@ def step_publish_youtube(run: Run, force: bool) -> bool:
     if not run.cfg.youtube.api_upload:
         run.log("youtube: upload lewat API nonaktif (youtube.api_upload = false); unggah manual memakai paket di "
                 "halaman Channel")
+        return False
+    if switched_off(run, "youtube", lambda c: c.youtube.api_upload):
         return False
     info = run.ctx.load("render", RenderInfo)
     if info is not None and info.valid and info.needs_review:
@@ -775,6 +816,8 @@ def step_notify(run: Run, force: bool) -> bool:
     if not telegram.configured(run.settings):
         run.log("telegram: PERINGATAN token bot / chat ID belum diisi; paket tidak dikirim")
         return False
+    if switched_off(run, "telegram", lambda c: c.notify.telegram):
+        return False
     src = sha(_need(run, "script", Script, "notify"))
     old = run.ctx.load("telegram", TelegramSent)
     done = set(old.sent) if old is not None and old.source == src and not force else set()
@@ -809,6 +852,8 @@ def _alert(run: Run, step: str, error: str) -> None:
         return
     if not telegram.configured(run.settings):
         run.log("telegram: token bot / chat ID belum diisi; peringatan kegagalan tidak dikirim")
+        return
+    if switched_off(run, "telegram (peringatan)", lambda c: c.notify.telegram):
         return
     from .runs import last_run_lines
     try:
@@ -872,6 +917,8 @@ def _weekly_report(run: Run, perf) -> None:
         return
     if not telegram.configured(run.settings):
         run.log("laporan mingguan: PERINGATAN token bot / chat ID Telegram belum diisi; tidak dikirim")
+        return
+    if switched_off(run, "laporan mingguan", lambda c: c.notify.telegram):
         return
     try:
         telegram.send_items(items, settings=run.settings, cancel=run.cancel, log=run.log)

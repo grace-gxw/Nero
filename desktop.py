@@ -101,9 +101,43 @@ def status() -> dict | None:
     if not SUPPORTED:
         return None
     try:
-        return {"shortcut": os.path.isfile(_lnk(_DESKTOP)), "autostart": os.path.isfile(_lnk(_STARTUP))}
+        disabled = startup_disabled()
+        # dimatikan di Windows (Startup apps) = tidak dibuka otomatis, walau ikonnya masih ada
+        return {"shortcut": os.path.isfile(_lnk(_DESKTOP)), "autostart": os.path.isfile(_lnk(_STARTUP)) and not disabled,
+                "autostart_disabled": disabled}
     except OSError:
         return None
+
+
+_STARTUP_APPROVED = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"
+
+
+def _enable_in_windows() -> None:
+    """Pengguna menyalakan buka otomatis di Nero: hapus tanda "dimatikan" yang dibuat Windows (Startup apps) untuk
+    ikon Nero, supaya Windows menjalankannya lagi. Tanpa tanda itu Windows menganggap ikon Startup aktif."""
+    if not SUPPORTED:
+        return
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_APPROVED, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, LNK_NAME)
+    except OSError:
+        pass                                     # tidak ada tanda: sudah aktif
+
+
+def startup_disabled() -> bool:
+    """Ikon buka otomatis Nero dimatikan di Windows (Task Manager → Startup apps, atau Settings → Apps → Startup):
+    berkasnya tetap ada di folder Startup, tetapi Windows tidak menjalankannya. Windows mencatatnya di
+    StartupApproved\\StartupFolder; byte pertama bernilai ganjil (mis. 03) berarti dimatikan."""
+    if not SUPPORTED:
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _STARTUP_APPROVED) as k:
+            data, _ = winreg.QueryValueEx(k, LNK_NAME)
+    except OSError:
+        return False
+    return isinstance(data, bytes) and len(data) > 0 and data[0] % 2 == 1
 
 
 def create_shortcuts() -> None:
@@ -113,11 +147,14 @@ def create_shortcuts() -> None:
     _remember_location()
 
 
-def set_autostart(on: bool) -> None:
-    """Buka Nero otomatis (di latar belakang) setiap kali Windows menyala."""
+def set_autostart(on: bool, *, by_user: bool = True) -> None:
+    """Buka Nero otomatis (di latar belakang) setiap kali Windows menyala. by_user=False (ikon diperbarui karena folder
+    dipindah): pilihan "dimatikan" di Startup apps Windows tidak diubah."""
     path = _lnk(_STARTUP)
     if on:
         _write_lnk(path, f'"{APP_PY}" {BACKGROUND_ARG}', "Nero berjalan di latar belakang")
+        if by_user:
+            _enable_in_windows()
         _remember_location()
     else:
         try:
@@ -142,7 +179,7 @@ def refresh_if_moved() -> None:
         if os.path.isfile(_lnk(_DESKTOP)) or os.path.isfile(_lnk(_PROGRAMS)):
             create_shortcuts()
         if os.path.isfile(_lnk(_STARTUP)):
-            set_autostart(True)
+            set_autostart(True, by_user=False)
         _remember_location()
         print("  Ikon Nero diperbarui ke lokasi folder yang baru.")
     except Exception as e:
