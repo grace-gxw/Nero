@@ -41,6 +41,7 @@ import { GLOBAL_MODES, useChannel } from "./store";
 import type { Captions, Job, RunDetail, RunSummary, SegmentVisual, YouTubeResult } from "./types";
 
 const TOS_URL = "https://www.youtube.com/t/terms";
+const KIND_LABELS: Record<"sungguhan" | "uji coba", string> = { sungguhan: "Run harian", "uji coba": "Uji coba" };
 
 /** Bagian "3. Hasil": pilih tanggal, lalu lihat video, paket unggah, QC, dan naskah. */
 export function ResultSection() {
@@ -50,7 +51,7 @@ export function ResultSection() {
   return (
     <section>
       <div className="mt-8 mb-4 flex flex-wrap items-center gap-3">
-        <h2 className="text-base font-bold">3. Hasil uji coba</h2>
+        <h2 className="text-base font-bold">3. Hasil run</h2>
         <span className="text-xs text-muted-foreground">Tonton, periksa naskah, lalu salin judul & deskripsi.</span>
         <div className="flex-1" />
         {runs.length > 0 && selected && (
@@ -71,7 +72,7 @@ export function ResultSection() {
       </div>
       {runs.length === 0 || !selected ? (
         <p className="rounded-xl bg-card px-4 py-10 text-center text-sm text-muted-foreground ring-1 ring-foreground/10">
-          Belum ada uji coba. Jalankan uji coba di atas; hasilnya muncul di sini.
+          Belum ada run. Jalankan uji coba di atas; hasilnya (juga run harian) muncul di sini.
         </p>
       ) : (
         <RunDetailView key={selected} day={selected} kick={detailKick} />
@@ -109,6 +110,7 @@ function RunDetailView({ day, kick }: { day: string; kick: number }) {
         <div className="min-w-0 flex-1">
           <p className="text-xs text-muted-foreground">
             {dateLabel(detail.date)}
+            {detail.kind && ` · ${KIND_LABELS[detail.kind]}`}
             {detail.format && ` · ${FORMAT_LABELS[detail.format] ?? detail.format}`}
           </p>
           <h3 className="truncate text-base font-bold">{detail.title || detail.topic || "Belum ada topik"}</h3>
@@ -483,6 +485,15 @@ function UploadPack({ detail }: { detail: RunDetail }) {
       </div>
       <CopyRow label="Tag" value={m.tags.join(", ")} done="Tag disalin" />
       <CopyRow label="Hashtag" value={m.hashtags.join(" ")} done="Hashtag disalin" />
+      {detail.manual_publish && !detail.uploaded && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Saran tayang: {dateLabel(detail.manual_publish.publish_at.slice(0, 10))} pukul{" "}
+          {detail.manual_publish.publish_time.replace(":", ".")} WIB (YouTube Studio → Visibilitas → Jadwalkan).
+          Penonton:{" "}
+          {detail.manual_publish.made_for_kids ? "dibuat untuk anak-anak" : "bukan untuk anak-anak"}.
+          {!detail.manual_publish.api_upload && " Upload otomatis mati, jadi Nero tidak menjadwalkan apa pun."}
+        </p>
+      )}
       <p className="text-[11px] leading-relaxed text-muted-foreground">
         Kategori YouTube: {CATEGORY_NAMES[m.category_id] ?? m.category_id ?? "-"}.{" "}
         {detail.visuals?.uses_ai_images ? (
@@ -744,7 +755,7 @@ function RunsList({
 }) {
   return (
     <div className="mt-6">
-      <p className="mb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">Riwayat uji coba</p>
+      <p className="mb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">Riwayat run</p>
       <ul className="divide-y overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
         {runs.map((r) => {
           const st = runStatus(r);
@@ -760,6 +771,9 @@ function RunsList({
               >
                 <span className="w-32 flex-none text-xs text-muted-foreground">{dateLabel(r.date)}</span>
                 <span className="min-w-0 flex-1 truncate">{r.title || r.topic || "-"}</span>
+                {r.kind && (
+                  <span className="hidden flex-none text-xs text-muted-foreground sm:inline">{KIND_LABELS[r.kind]}</span>
+                )}
                 <span className={cn("flex items-center gap-1.5 text-xs", TONE_TEXT[st.tone])}>
                   <span className={cn("size-1.5 rounded-full", TONE_DOT[st.tone])} />
                   <span className="sr-only sm:not-sr-only">{st.label}</span>

@@ -50,6 +50,8 @@ export interface Job {
 
 export interface RunSummary {
   date: string;
+  /** jenis run terakhir tanggal ini: run harian sungguhan atau uji coba ("" = belum ada) */
+  kind: "sungguhan" | "uji coba" | "";
   topic: string;
   title: string;
   format: string;
@@ -288,6 +290,8 @@ export interface RunDetail extends Omit<RunSummary, "qc" | "render"> {
   upload_replan: boolean;
   /** genre khusus run ini (--genre), dipakai lagi saat membuat ulang */
   run_genre: string;
+  /** saran untuk unggah manual: jam tayang (WIB) & penonton dari pengaturan */
+  manual_publish: { publish_time: string; publish_at: string; made_for_kids: boolean; api_upload: boolean } | null;
 }
 
 export interface Genre {

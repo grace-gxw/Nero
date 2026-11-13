@@ -123,7 +123,8 @@ function SchedulePanel({ s }: { s: ScheduleStatus }) {
       <p role="status">
         <span className="font-medium">Jadwal harian: aktif, tiap hari pukul {runTime} WIB.</span>{" "}
         <span className={cn(bad ? "text-warn" : t.state === "selesai" ? "text-ok" : "text-muted-foreground")}>
-          Run hari ini {STATE_TEXT[t.state] ?? t.state}
+          {t.state === "berjalan" && state?.today && t.day !== state.today ? "Run kemarin" : "Run hari ini"}{" "}
+          {STATE_TEXT[t.state] ?? t.state}
           {t.attempts > 1 && ` (percobaan ${t.attempts} dari ${s.max_attempts})`}
           {t.state === "gagal" && t.next_retry && `; dicoba lagi ${whenLabel(t.next_retry, t.day, s.timezone)}`}.
         </span>
