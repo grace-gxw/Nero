@@ -176,9 +176,9 @@ Ada dua jenis AI, keduanya opsional:
 
 Tanpa pengaturan apa pun, setiap fitur bekerja dengan algoritma lokal (gratis); di Clip Maker, momen dipilih otomatis di komputer Anda. Untuk hasil yang jauh lebih bagus (di Clip Maker: pemilihan momen, judul hook, dan caption), isi **Claude API key** di **Pengaturan** (menu kiri bawah). Kunci ini dipakai bersama oleh semua fitur. Kunci bisa dibuat di https://console.anthropic.com (berbayar per pemakaian; satu video biasanya hanya beberapa sen dolar). Kunci hanya disimpan di komputer Anda (`data/settings.json`).
 
-## Channel Otomatis (dalam pengembangan)
+## Channel Otomatis
 
-Fitur kedua Nero: setiap hari membuat satu video pendek orisinal untuk channel Anda sendiri, mulai dari riset topik, skrip, pemeriksaan fakta, suara, visual, sampai render. Hasilnya berupa paket siap unggah, dan bisa diunggah ke YouTube sebagai private (lihat **Menghubungkan YouTube**). Rancangannya ada di `SPEC.md` dan `INTEGRATION_PLAN.md`. Fitur ini masih dibangun bertahap dan **nonaktif** sampai Anda menyalakannya.
+Fitur kedua Nero: setiap hari membuat satu video pendek orisinal untuk channel Anda sendiri, mulai dari riset topik, skrip, pemeriksaan fakta, suara, visual, sampai render. Hasilnya berupa paket siap unggah, dan bisa diunggah ke YouTube sebagai private (lihat **Menghubungkan YouTube**). Rancangannya ada di `SPEC.md` dan `INTEGRATION_PLAN.md`. Fitur ini **nonaktif** sampai Anda menyalakannya (lihat **Mengaktifkan Channel Otomatis**).
 
 ### Halaman Channel Otomatis
 
@@ -190,12 +190,12 @@ Buka **Channel Otomatis** di menu kiri Nero.
    - Centang **Mulai dari riset lagi** untuk topik baru di hari yang sama.
    - Uji coba tidak pernah mengunggah atau mengirim apa pun.
 2. **Kesiapan.** Menunjukkan key yang wajib (Gemini) dan yang opsional (Groq, Pexels/Pixabay, Cloudflare, folder musik). Tombol **Atur key & pengaturan** membuka pengaturan channel.
-3. **Hasil uji coba.**
+3. **Hasil run.** Hasil uji coba dan run harian, masing-masing ditandai *Uji coba* atau *Run harian*.
    - Video bisa ditonton dan diunduh.
    - **Paket unggah manual** berisi judul, deskripsi, tag, dan hashtag, masing-masing dengan tombol **Salin**.
    - Ada juga hasil pemeriksaan fakta (QC), naskah per segmen (jenis visual, sumber klip, cadangan yang dipakai), sumber riset, dan catatan proses.
    - Kotak **YouTube** menampilkan tombol **Unggah uji (private)** bila YouTube sudah terhubung, atau status video yang sudah diunggah.
-   - Pilih tanggal lain di **Riwayat uji coba**.
+   - Pilih tanggal lain di **Riwayat run**.
    - Video yang lolos pemeriksaan disalin ke **Folder hasil** (`output\channel\<tanggal>\`).
 4. **Analitik.** Performa video buatan Nero di YouTube, pelajaran untuk video berikutnya, dan laporan mingguan (lihat **Analitik & laporan mingguan**).
 
@@ -247,6 +247,7 @@ Teks perintah untuk AI ada di `features\channel\prompts\`. Boleh diedit, misalny
 - Video yang tidak lolos pemeriksaan (bukan 1080×1920, bukan 30 fps, tanpa audio, atau durasi di luar 45–58 detik ±3) membuat run gagal dan tidak akan di-upload.
 - Video yang sah tetapi visualnya kurang bervariasi (misalnya semua grafik karena key stok/AI belum diisi) ditandai **perlu dicek** di `render.json` (`needs_review`). Video seperti ini tidak akan diunggah otomatis.
 - Menjalankan ulang memakai hasil yang masih cocok. Bila skrip, suara, atau pengaturan berubah (misalnya suara diganti, topik terlarang ditambah), langkah yang terdampak dibuat ulang otomatis. Video lama di folder hasil ditarik begitu langkah sebelumnya dijalankan ulang. Untuk membuat ulang satu langkah: `--force tts`, `--force visuals` (misalnya setelah mengisi key Pexels/Cloudflare), atau `--force render` (misalnya setelah mengganti gaya subtitle).
+- **Tidak berulang dari hari ke hari.** Topik 60 hari terakhir tidak dipakai lagi, format tidak sama dengan 2 video sebelumnya, hook dibuat bervariasi, dan klip stok 30 hari terakhir tidak dipakai ulang. Yang dihitung: video di YouTube (riwayat) **dan** video yang sudah dibuat Nero di hari-hari sebelumnya walau belum diunggah, jadi ini juga berlaku saat Anda mengunggah sendiri tanpa menghubungkan YouTube.
 - QC dengan model Gemini ringan masih bisa meloloskan nuansa yang keliru, misalnya kalimat usang di Wikipedia ("sekarang berada di…"). Tonton dan baca naskahnya sebelum mengunggah; key Groq membuat pemeriksaan lebih teliti.
 
 ### Menghubungkan YouTube
@@ -278,7 +279,7 @@ Cara kerjanya: Nero membuka "penerima" sementara di `http://127.0.0.1:<port acak
 
 **3. Unggah uji**
 
-Di **Hasil uji coba**, pilih run yang videonya lolos pemeriksaan, lalu tekan **Unggah uji (private)**.
+Di **Hasil run**, pilih run yang videonya lolos pemeriksaan, lalu tekan **Unggah uji (private)**.
 - Video diunggah sebagai **private**: hanya Anda yang bisa melihatnya. Video baru tayang bila Anda sendiri yang mengubahnya di YouTube Studio.
 - Sebelum mengunggah, Anda diminta menyatakan video mematuhi [Persyaratan Layanan YouTube](https://www.youtube.com/t/terms).
 - Setelah terunggah, kotak YouTube menampilkan status ("Masih diproses" → "Siap di YouTube"), tautan YouTube Studio, dan tombol **Cek status**.
@@ -413,7 +414,9 @@ Jadwal berjalan **di dalam Nero** di laptop ini (keputusan no. 4 di `INTEGRATION
 - **Laptop dan Nero harus menyala.** Nyalakan **Buka otomatis saat Windows menyala** di Pengaturan Nero. Nero lalu berjalan di latar setiap kali Anda login. Kartu **2. Kesiapan** memberi peringatan bila pilihan ini mati, termasuk bila Nero dimatikan di Windows (Task Manager → Startup apps). Menyalakannya lagi dari Pengaturan Nero juga mengaktifkannya kembali di Windows.
 - **Run dikejar.** Bila laptop mati atau tidur pada jam run, run hari itu dimulai begitu Nero menyala atau laptop bangun, kapan pun di hari yang sama. Nero menunggu ±2 menit dulu supaya internet tersambung. Hari yang sudah lewat tidak dikejar.
 - **Laptop tidak tidur di tengah run.** Selama run berjalan, Nero meminta Windows tidak tidur otomatis; layar tetap boleh mati. Ini tidak mencegah tidur karena laptop ditutup atau tombol power. Bila itu terjadi, run dilanjutkan dari langkah terakhir yang selesai di percobaan berikutnya.
-- **Gagal = dicoba ulang.** Run yang gagal (mis. AI gratis sedang penuh) dicoba lagi 1 jam lalu 2 jam kemudian, maksimal 3 kali per hari. Setiap kegagalan dikirim ke Telegram.
+- **Gagal = dicoba ulang.** Run yang gagal (mis. AI gratis sedang penuh) dicoba lagi 1 jam lalu 2 jam kemudian, maksimal 3 kali per hari, dan dilanjutkan dari langkah terakhir yang selesai. Setiap kegagalan dikirim ke Telegram (bila sudah diisi).
+  - Naskah yang gagal pemeriksaan fakta (QC) walau sudah ditulis ulang 2× tidak diulang begitu saja: percobaan berikutnya mencari **topik baru**. Uji coba dari halaman tetap berhenti di QC (pakai **Mulai dari riset lagi**).
+  - Bila Nero ditutup di tengah run, run dilanjutkan begitu Nero dibuka lagi (setelah ±2 menit), bukan 1 jam kemudian.
   - Pengaturan yang belum lengkap (mis. genre belum dipilih) tidak dicoba ulang; diberitahukan sekali.
   - Run yang Anda batalkan sendiri tidak dicoba ulang otomatis.
 - **Satu run per hari.** Uji coba yang sedang berjalan ditunggu dulu.
@@ -427,6 +430,31 @@ Kartu **2. Kesiapan** menampilkan keadaan run hari ini, run berikutnya, dan tomb
 ```
 
 Bila ingin laptop bangun sendiri untuk run harian: Windows menyediakan *wake timer*, tetapi di laptop ini wake timer mati saat memakai baterai. Nero tidak mengubah pengaturan daya Windows.
+
+### Mengaktifkan Channel Otomatis
+
+**Sebelum menyalakan:**
+1. Jalankan satu **Uji coba → Video lengkap** dengan versi Nero sekarang dan pastikan hasilnya lolos QC dan videonya valid (tanda *perlu dicek* boleh). Run harian pertama memakai ulang hasil uji coba hari itu.
+2. Nyalakan **Buka otomatis saat Windows menyala** di Pengaturan Nero. Tanpa itu, run harian hanya berjalan pada hari Anda membuka Nero.
+3. Sangat disarankan: isi **key Groq** (gratis). Gemini gratis kadang tidak menjawab beberapa menit (503/timeout); tanpa cadangan lain, langkah yang sedang berjalan gagal dan baru dicoba lagi 1 jam kemudian.
+4. Disarankan: **Telegram**. Tanpanya, hasil dan kegagalan run harian hanya terlihat di halaman Channel Otomatis, jadi buka halaman itu setiap hari.
+5. Opsional: key **Pexels/Pixabay** (video stok) dan **Cloudflare** (gambar AI). Tanpanya semua visual berupa grafik dan video ditandai *perlu dicek*.
+6. Bila Nero sedang terbuka saat Anda memperbarui Nero, tutup dulu lewat **Matikan Nero**, lalu buka lagi.
+
+**Menyalakan:** Pengaturan channel → Otomatis → centang **Aktifkan Channel Otomatis** → **Simpan**. Bila jam run hari ini (bawaan 05.17) sudah lewat, run hari ini dimulai dalam ±1 menit dan memakai ulang hasil uji coba hari itu.
+
+**Setiap hari (mode manual, upload otomatis mati):**
+- Sekitar jam run, Nero membuat video. Hasilnya muncul di **Hasil run** dengan tanda *Run harian*, dan disalin ke `output\channel\<tanggal>\` (video, caption TikTok & Instagram).
+- Tonton videonya dan baca hasil QC. Lalu unggah sendiri: salin judul, deskripsi, tag, dan hashtag dari **Paket unggah manual**. Di YouTube Studio, jadwalkan tayang pada jam tayang Anda (bawaan 18.00 WIB; tertulis di paket) dan jawab pertanyaan penonton (bukan untuk anak-anak). Centang label konten sintetis bila paket memintanya.
+- Langkah **Unggah ke YouTube**, **Kirim ke Telegram**, dan **Catat riwayat** tertulis *tidak dijalankan* selama upload otomatis mati, Telegram belum diisi, atau videonya belum ada di YouTube. Ini normal.
+
+**Membuktikan 3 hari berturut-turut:** di **Riwayat run**, tiga tanggal berturut-turut bertanda *Run harian* dengan status *Video siap* (atau *Video siap · perlu dicek* selama key stok/gambar AI belum diisi). Dari baris perintah, `schedule-status` menampilkan run harian 7 hari terakhir dari `run.log` tiap tanggal (hasil, jumlah percobaan, langkah yang benar-benar dibuat hari itu):
+
+```
+.venv\Scripts\python -m features.channel schedule-status
+```
+
+Selama masa bukti, jangan menjalankan **Uji coba** yang membuat ulang sesuatu (mis. dengan **Mulai dari riset lagi**) pada tanggal yang sedang dibuktikan: uji coba itu mengganti video run harian hari itu, dan tanda tanggal itu berubah menjadi *Uji coba*.
 
 ## Tips & masalah umum
 
@@ -449,7 +477,7 @@ Bila ingin laptop bangun sendiri untuk run harian: Windows menyediakan *wake tim
 | Analitik: video yang saya unggah sendiri tidak muncul | Judul di YouTube harus sama persis dengan judul buatan Nero untuk run itu. Ubah judulnya di YouTube Studio, atau pakai **Unggah uji** dari Nero. |
 | Analitik: "Izin melihat statistik belum diberikan" | **Hubungkan ulang** YouTube dan centang semua izin, termasuk statistik. |
 | Run harian tidak berjalan | Pastikan Channel Otomatis **aktif**, Nero terbuka (nyalakan **Buka otomatis saat Windows menyala** di Pengaturan Nero), dan laptop menyala setelah jam run. Lihat keadaan run hari ini di kartu **2. Kesiapan** atau `schedule-status`. |
-| Run harian "gagal" berulang | Buka hasil run tanggal itu untuk alasan dan log. Bila AI gratis sedang penuh, isi key Groq sebagai cadangan. Setelah 3 percobaan, tekan **Jalankan run harian sekarang** untuk mencoba lagi. |
+| Run harian "gagal" berulang | Buka hasil run tanggal itu untuk alasan dan log. Bila AI gratis sedang penuh ("terlalu lama menjawab", 503), isi key Groq sebagai cadangan. Setelah 3 percobaan, tekan **Jalankan run harian sekarang** untuk mencoba lagi (naskah yang gagal QC otomatis diganti topik baru). |
 | Telegram: "Cari chat ID" kosong | Kirim pesan apa saja ke bot (Telegram hanya menyimpannya 24 jam), lalu tekan lagi. |
 | "Model selalu berpikir panjang" | Model yang terpilih adalah versi *thinking*. Unduh versi **-instruct** lalu pilih di Pengaturan. |
 

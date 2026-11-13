@@ -407,3 +407,29 @@ Temuan Fase I-8 (dokumen resmi Microsoft & CPython + uji nyata, 13 Nov 2026):
     Bila Nero dimatikan di Startup apps Windows, Pengaturan Nero menampilkan buka otomatis mati; menyalakannya dari
     Nero menghapus tanda "dimatikan" itu (tidak saat ikon hanya diperbarui karena folder dipindah).
 
+### Temuan Fase I-akhir (aktivasi, 13 Nov 2026)
+
+- Dry-run ujung ke ujung di data pengguna (`run-daily --dry-run`, niche fakta sains, hanya key Gemini):
+  - Percobaan 1 gagal di langkah SEO: gemini-3.8-flash membalas 503 selama ±2 menit, lalu permintaan perbaikan
+    hashtag ke gemini-lite dan Gemini utama sama-sama timeout (120 dtk), dan Groq belum punya key.
+  - Percobaan 2 (melanjutkan dari checkpoint, seperti coba ulang jadwal) selesai: QC 10/10, video valid 47,6 dtk,
+    semua grafik (tanpa key stok/AI) jadi ditandai perlu dicek. Paket manual siap; Telegram hanya dicatat.
+  - Naskah 112 kata (batas bawah lama) menjadi video 41,3 dtk (< 42), jadi langkah TTS meminta naskah dipanjangkan
+    (naskah, QC, dan SEO diulang). edge-tts sempat membalas 503 sekali lalu berhasil.
+- Audit kesiapan (4 sudut pandang + verifikasi adversarial + pemeriksa kelengkapan), diperbaiki sebelum diaktifkan:
+  - Tanpa YouTube terhubung, riwayat kosong: format selalu sama dan topik/hook/klip bisa berulang. Kini ingatan
+    antarhari juga memakai video yang sudah dibuat run sebelumnya (`memory.py`).
+  - QC yang gagal tersimpan sebagai checkpoint, jadi ketiga coba ulang jadwal dan tombol "Jalankan run harian
+    sekarang" gagal lagi dalam hitungan detik. Kini run sungguhan mencari topik baru.
+  - Permintaan perbaikan isi yang timeout membuang jawaban pertama yang sudah layak (penyebab kegagalan dry-run).
+    Kini jawaban pertama dipakai dengan catatan.
+  - Batas bawah jumlah kata diberi cadangan 2 dtk; perbaikan panjang naskah diarahkan ke rentang ideal.
+  - Halaman menyebut run harian "uji coba" dan menandai "Unggah ke YouTube"/"Kirim ke Telegram" selesai padahal
+    tidak terjadi. Kini ada label Run harian/Uji coba dan status "tidak dijalankan".
+  - Run yang terputus baru dilanjutkan 1 jam setelah Nero dibuka lagi; run yang melewati tengah malam kehilangan
+    catatannya; jadwal dibangunkan sebelum key yang disimpan bersamaan tersimpan. Ketiganya diperbaiki.
+  - Bukti 3 hari: hanya run.log yang tidak ditimpa. `schedule-status` kini meringkas run harian 7 hari dari run.log.
+  - Paket unggah manual kini menyebut saran jam tayang (18.00 WIB) dan jawaban penonton, karena tanpa upload API
+    Nero tidak menjadwalkan apa pun.
+- Yang tetap menjadi tindakan pengguna: buka otomatis Nero, key Groq (sangat disarankan), Telegram, key stok/AI.
+
