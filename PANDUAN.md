@@ -199,7 +199,7 @@ Buka **Channel Otomatis** di menu kiri Nero.
    - Video yang lolos pemeriksaan disalin ke **Folder hasil** (`output\channel\<tanggal>\`).
 4. **Analitik.** Performa video buatan Nero di YouTube, pelajaran untuk video berikutnya, dan laporan mingguan (lihat **Analitik & laporan mingguan**).
 
-**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, YouTube (hubungkan, mode tayang, jam tayang, playlist, kata kunci tren, upload otomatis), Telegram, Analitik (hari laporan mingguan, izin AI), dan sakelar **Aktifkan**. Jadwal harian belum tersedia, jadi sakelar ini belum menjalankan apa pun. Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
+**Pengaturan channel** (tombol kanan atas): genre/niche & penonton, suara (Ardi/Gadis) dan kecepatannya, gaya subtitle dari pustaka Clip Maker, folder & volume musik, jenis visual yang boleh dipakai, key API, YouTube (hubungkan, mode tayang, jam tayang, playlist, kata kunci tren, upload otomatis), Telegram, Analitik (hari laporan mingguan, izin AI), jam run harian, dan sakelar **Aktifkan** (lihat **Jadwal harian**). Key Gemini diisi di **Pengaturan Nero** karena dipakai bersama Clip Maker.
 
 Kunci API disimpan di `data/settings.json` dan diisi dari halaman Nero; nilainya tidak pernah ditampilkan lagi. Untuk baris perintah, setiap kunci juga bisa diisi lewat environment variable. Nilai dari environment variable menimpa yang tersimpan, dan halaman menandainya "dari environment variable":
 
@@ -292,7 +292,7 @@ Di **Hasil uji coba**, pilih run yang videonya lolos pemeriksaan, lalu tekan **U
 
 **4. Upload otomatis (nanti)**
 
-Menyalakan **Upload otomatis lewat API** membuat run harian mengunggah sendiri, tetapi hanya bila Channel Otomatis **aktif**. Jadwal harian dibuat di Fase I-8. Mode tayangnya:
+Menyalakan **Upload otomatis lewat API** membuat run harian mengunggah sendiri, tetapi hanya bila Channel Otomatis **aktif** (lihat **Jadwal harian**). Mode tayangnya:
 
 | Mode | Hasil di YouTube |
 |---|---|
@@ -400,6 +400,34 @@ Baris perintah:
 
 `analyst` memperbarui analisis dan menampilkan `learnings.md`. `weekly-report` menampilkan isi laporan; tambahkan `--send` untuk mengirimnya ke Telegram.
 
+### Jadwal harian
+
+Saat **Channel Otomatis aktif** (Pengaturan channel → Otomatis → **Aktifkan**), Nero menjalankan *run harian sungguhan* setiap hari pada **jam run harian** (bawaan 05.17 WIB). Run itu:
+- membuat video;
+- mengunggahnya ke YouTube bila **Upload otomatis** menyala;
+- menyiapkan caption TikTok/Instagram;
+- mengirim paket ke Telegram;
+- mengirim laporan mingguan pada harinya.
+
+Jadwal berjalan **di dalam Nero** di laptop ini (keputusan no. 4 di `INTEGRATION_PLAN.md`), jadi:
+- **Laptop dan Nero harus menyala.** Nyalakan **Buka otomatis saat Windows menyala** di Pengaturan Nero. Nero lalu berjalan di latar setiap kali Anda login. Kartu **2. Kesiapan** memberi peringatan bila pilihan ini mati, termasuk bila Nero dimatikan di Windows (Task Manager → Startup apps). Menyalakannya lagi dari Pengaturan Nero juga mengaktifkannya kembali di Windows.
+- **Run dikejar.** Bila laptop mati atau tidur pada jam run, run hari itu dimulai begitu Nero menyala atau laptop bangun, kapan pun di hari yang sama. Nero menunggu ±2 menit dulu supaya internet tersambung. Hari yang sudah lewat tidak dikejar.
+- **Laptop tidak tidur di tengah run.** Selama run berjalan, Nero meminta Windows tidak tidur otomatis; layar tetap boleh mati. Ini tidak mencegah tidur karena laptop ditutup atau tombol power. Bila itu terjadi, run dilanjutkan dari langkah terakhir yang selesai di percobaan berikutnya.
+- **Gagal = dicoba ulang.** Run yang gagal (mis. AI gratis sedang penuh) dicoba lagi 1 jam lalu 2 jam kemudian, maksimal 3 kali per hari. Setiap kegagalan dikirim ke Telegram.
+  - Pengaturan yang belum lengkap (mis. genre belum dipilih) tidak dicoba ulang; diberitahukan sekali.
+  - Run yang Anda batalkan sendiri tidak dicoba ulang otomatis.
+- **Satu run per hari.** Uji coba yang sedang berjalan ditunggu dulu.
+  - Video yang sudah diunggah tidak pernah diunggah lagi.
+  - Bila jam tayang mode *Jendela tinjau* sudah dipakai video lain (mis. run yang terlambat digeser ke besok), video berikutnya diunggah private tanpa jadwal supaya tidak tayang bersamaan.
+
+Kartu **2. Kesiapan** menampilkan keadaan run hari ini, run berikutnya, dan tombol **Jalankan run harian sekarang** (run sungguhan tanpa menunggu jam run). Saat Anda menyalakan **Aktifkan** setelah jam run hari ini lewat, run hari ini langsung dikejar. Status jadwal juga bisa dilihat dari baris perintah:
+
+```
+.venv\Scripts\python -m features.channel schedule-status
+```
+
+Bila ingin laptop bangun sendiri untuk run harian: Windows menyediakan *wake timer*, tetapi di laptop ini wake timer mati saat memakai baterai. Nero tidak mengubah pengaturan daya Windows.
+
 ## Tips & masalah umum
 
 | Masalah | Solusi |
@@ -420,6 +448,8 @@ Baris perintah:
 | Analitik: "YouTube Analytics API belum diaktifkan" | Di Google Cloud: **APIs & Services → Library → YouTube Analytics API → Enable** (project yang sama dengan client OAuth), lalu **Perbarui analisis**. |
 | Analitik: video yang saya unggah sendiri tidak muncul | Judul di YouTube harus sama persis dengan judul buatan Nero untuk run itu. Ubah judulnya di YouTube Studio, atau pakai **Unggah uji** dari Nero. |
 | Analitik: "Izin melihat statistik belum diberikan" | **Hubungkan ulang** YouTube dan centang semua izin, termasuk statistik. |
+| Run harian tidak berjalan | Pastikan Channel Otomatis **aktif**, Nero terbuka (nyalakan **Buka otomatis saat Windows menyala** di Pengaturan Nero), dan laptop menyala setelah jam run. Lihat keadaan run hari ini di kartu **2. Kesiapan** atau `schedule-status`. |
+| Run harian "gagal" berulang | Buka hasil run tanggal itu untuk alasan dan log. Bila AI gratis sedang penuh, isi key Groq sebagai cadangan. Setelah 3 percobaan, tekan **Jalankan run harian sekarang** untuk mencoba lagi. |
 | Telegram: "Cari chat ID" kosong | Kirim pesan apa saja ke bot (Telegram hanya menyimpannya 24 jam), lalu tekan lagi. |
 | "Model selalu berpikir panjang" | Model yang terpilih adalah versi *thinking*. Unduh versi **-instruct** lalu pilih di Pengaturan. |
 

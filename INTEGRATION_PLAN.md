@@ -367,3 +367,43 @@ Temuan Fase I-7 (riset dokumen resmi Google + verifikasi adversarial, 13 Nov 202
   - Halaman: pemutar video hari ini tersembunyi selama analisis, status laporan menampilkan kiriman minggu lalu,
     kartu tidak dimuat ulang setelah Hubungkan/Putuskan, dan pesan izin AI/izin statistik keliru. Semua diperbaiki.
 
+Temuan Fase I-8 (dokumen resmi Microsoft & CPython + uji nyata, 13 Nov 2026):
+- Di Windows 8 ke atas, timeout `Event.wait`/`time.sleep` tidak berjalan selama laptop tidur, sedangkan
+  `time.monotonic()` (QueryPerformanceCounter) ikut berjalan. Satu penantian panjang sampai jam run akan molor sebesar
+  lama tidur. Karena itu jadwal memeriksa jam dinding setiap 60 dtk. Lompatan monotonic dipakai untuk mendeteksi bangun,
+  lalu jadwal menunggu 2 menit supaya jaringan siap.
+- Jam sistem bisa melompat (W32Time) atau mundur (Secure Time Seeding). Jadwal tidak menjalankan ulang hari yang
+  tanggalnya sudah lewat ("jam_mundur").
+- Render ffmpeg/NVENC tidak dihitung aktivitas oleh Windows. Laptop ini tidur setelah 10 menit di baterai, jadi setiap
+  pekerjaan meminta `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` di thread-nya sendiri.
+  Panggilan itu tidak mencegah tidur oleh pengguna (tutup laptop/tombol power); run dilanjutkan dari checkpoint
+  pada percobaan berikutnya.
+- Laptop ini memakai sleep S3 (tanpa Modern Standby), dan wake timer mati di baterai. Nero tidak mengubah
+  pengaturan daya. Shortcut Startup baru berjalan setelah login; Fast Startup = proses Nero mati saat shutdown,
+  jadi keadaan jadwal disimpan di disk (`schedule.json`).
+- Uji nyata di data-uji: jam run 07.21, Nero uji dibuka 07.21, run sungguhan dimulai sendiri 07.23 (masa tunggu 2
+  menit) dan selesai 07.26 (video valid 51,3 dtk; tanpa key stok/AI jadi ditandai perlu dicek; api_upload mati dan
+  Telegram belum diisi, jadi tidak ada yang diunggah atau dikirim). schedule.json: selesai, 1 percobaan.
+- Run yang terlambat setelah jam tayang digeser ke besok (SPEC 6.10). Bila slot itu sudah dipakai video run lain,
+  video diunggah private tanpa jadwal, supaya dua video tidak tayang bersamaan.
+- Review adversarial I-8 (4 reviewer + pemeriksa skeptis, 13 Nov 2026), semuanya diperbaiki dan dites:
+  - Mematikan Channel Otomatis (atau upload otomatis/Telegram) di tengah run harian belum menghentikan upload dan
+    kiriman. Kini menyimpan pengaturan membatalkan run harian yang berjalan, dan langkah upload, Telegram, peringatan,
+    serta laporan mingguan membaca ulang sakelarnya sebelum mengirim (`pipeline.switched_off`).
+  - Hasil run yang selesai/dibatalkan saat Channel Otomatis nonaktif tidak tercatat, lalu dianggap "terputus" dan
+    diulang. Kini hasil run selalu dicatat lebih dulu.
+  - Kunci run milik Nero yang mati (PID-nya bisa dipakai proses lain setelah reboot) membuat status macet "berjalan"
+    sampai 3 jam. Kini kunci itu dikenali dari PID yang dicatat jadwal lalu dilepas. Kunci basi juga tidak lagi
+    menghalangi pembersihan folder run lama.
+  - Coba ulang yang jatuh setelah tengah malam dijanjikan di halaman tetapi tidak pernah dijalankan. Kini statusnya
+    "gagal" dengan keterangan. Run gagal yang dimulai dari tombol sebelum jam run kini mengikuti jeda coba ulang.
+  - Jam yang sempat maju jauh menahan jadwal berhari-hari. Kini hanya selisih tepat sehari yang dianggap jam mundur,
+    dan halaman menampilkannya.
+  - Peringatan "Nero tidak dibuka otomatis" kini juga muncul bila Nero dimatikan di daftar Startup apps Windows.
+    Jam di panel jadwal memakai zona waktu jadwal, bukan zona browser.
+  - Ronde 2: pelepasan kunci "milik Nero lama" bisa menghapus kunci run yang masih berjalan di Nero kedua. Kini
+    `runctx.lock_active` menganggap kunci basi bila proses pemiliknya dibuat setelah kunci ditulis (PID didaur
+    ulang), berlaku untuk semua kunci (run, upload, analis). "Run berikutnya" tidak ditampilkan saat jam mundur.
+    Bila Nero dimatikan di Startup apps Windows, Pengaturan Nero menampilkan buka otomatis mati; menyalakannya dari
+    Nero menghapus tanda "dimatikan" itu (tidak saat ikon hanya diperbarui karena folder dipindah).
+

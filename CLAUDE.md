@@ -86,9 +86,23 @@ Panduan singkat untuk sesi Claude Code berikutnya. Detail untuk pengguna ada di 
   - Laporan mingguan: `weekly_key` = hari laporan terakhir ≤ hari ini (dikejar bila terlewat); hanya run sungguhan (`not dry_run`, berarti `enabled`) + `notify.telegram`; dicatat di `weekly_report.json`, gagal = dicoba lagi. `weekly_report_now()` = kirim atas perintah pengguna (menandai minggu ini bila belum).
   - Halaman: kartu `analytics-card.tsx`, rute `/analytics`, `/analytics/run|report|clear`; pekerjaan `jobs` mode `analyst`/`report` (`GLOBAL_MODES`, tanpa folder run; log ke `data/channel/analyst.log`).
   - Tes memakai `FakeAnalytics` (turunan `FakeGoogle`) dan `FakeAI`.
+- Jadwal harian (Fase I-8, `scheduler.py`, keputusan no. 4: di dalam Nero, bukan GitHub Actions):
+  - `api.start()` menyalakan satu thread daemon. Thread memeriksa setiap 60 dtk dengan jam dinding `schedule.timezone`. Jangan memakai satu penantian panjang sampai jam run: timeout `Event.wait`/`time.sleep` di Windows tidak berjalan saat laptop tidur. Masa tunggu 120 dtk setelah Nero dibuka atau laptop bangun (lompatan `time.monotonic`, QPC ikut berjalan saat tidur).
+  - Selama `enabled=false` tidak memulai apa pun. Saat aktif dan `schedule.run_time` hari ini lewat: satu run sungguhan per hari lewat `jobs` mode `daily` (`run_daily(dry_run=False)`), dikejar kapan pun di hari itu (hari lalu tidak).
+  - Penanganan hasil run:
+    - gagal: dicoba lagi +60/+120 menit (maks. 3);
+    - `EXIT_CONFIG`: dilewati, dan dikirim ke Telegram sekali;
+    - dibatalkan pengguna: tidak diulang;
+    - `EXIT_LOCKED`: tidak menghitung percobaan;
+    - Nero ditutup di tengah run: gagal, lalu dilanjutkan dari checkpoint;
+    - jam mundur: tidak menjalankan ulang.
+  - Status disimpan di `data/channel/schedule.json`. `jobs.LISTENERS` memanggil `kick()` saat pekerjaan selesai. `run_now()` dipanggil tombol "Jalankan run harian sekarang".
+  - `power.keep_awake()` dipakai setiap pekerjaan `jobs`: `SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED)` di thread pekerjaan itu sendiri, dikembalikan di `finally`. Tidak mencegah tidur oleh pengguna.
+  - `pipeline._slot_taken`: jam tayang review_window yang sudah dipakai video run lain berarti video ini diunggah private tanpa jadwal.
+  - Tes memakai `Scheduler.tick(now=...)` dengan jam & pekerjaan palsu; tidak ada thread jadwal sungguhan di tes.
 - Pembatalan: `cancel.py` memasang event batal per thread (`cancel_scope`). Panggilan AI (`llm`) dan riset memeriksanya, jadi Batal juga menghentikan langkah rencana.
 - Windows: berkas yang sedang dibaca/diputar tidak bisa diganti. Tulis dan hapus lewat `state.replace_retry`/`remove_retry`, dan baca dengan `state.read_text` (berkas langsung ditutup).
-- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan|media|video --genre <id> | youtube-auth | youtube-status | youtube-upload --date D | youtube-check --date D | youtube-disconnect | telegram-chats | telegram-test | telegram-send --date D | analyst [--cached] | weekly-report [--send] | analytics-clear`.
+- CLI: `.venv\Scripts\python -m features.channel llm-ping | genres | run-daily --dry-run --only plan|media|video --genre <id> | youtube-auth | youtube-status | youtube-upload --date D | youtube-check --date D | youtube-disconnect | telegram-chats | telegram-test | telegram-send --date D | analyst [--cached] | weekly-report [--send] | analytics-clear | schedule-status`.
 - Di heredoc Bash tool, backslash (`\n`) bisa berubah; tulis skrip/berkas dengan tool Write.
 - Dilarang:
   - Memakai `yt_dlp` atau `download_video` di modul channel. Ada tes yang menjaga ini.
