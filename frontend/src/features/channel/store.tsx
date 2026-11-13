@@ -58,6 +58,7 @@ export const MODE_NAMES: Partial<Record<Job["mode"], string>> = {
   notify: "Kirim ke Telegram",
   analyst: "Analisis performa",
   report: "Laporan mingguan",
+  daily: "Run harian",
 };
 
 export function useChannel(): Store {

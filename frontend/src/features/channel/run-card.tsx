@@ -214,7 +214,9 @@ function JobView({ job, onCancel }: { job: Job; onCancel: () => void }) {
                   ? "Hentikan kiriman ke Telegram"
                   : job.mode === "analyst"
                     ? "Hentikan analisis"
-                    : "Hentikan uji coba"
+                    : job.mode === "daily"
+                      ? "Hentikan run harian (tidak dicoba ulang otomatis hari ini)"
+                      : "Hentikan uji coba"
             }
             disabled={job.cancelling}
           >

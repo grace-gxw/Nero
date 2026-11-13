@@ -106,6 +106,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
   const [apiUpload, setApiUpload] = useState(c.youtube.api_upload);
   const [approval, setApproval] = useState<ChannelConfig["approval"]["mode"]>(c.approval.mode);
   const [publishTime, setPublishTime] = useState(c.schedule.publish_time);
+  const [runTime, setRunTime] = useState(c.schedule.run_time);
   const [playlist, setPlaylist] = useState(c.youtube.playlist_id);
   const [kids, setKids] = useState(c.youtube.made_for_kids);
   const [ytQueries, setYtQueries] = useState(c.research.youtube_search_queries.join(", "));
@@ -131,6 +132,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
     if (!Number.isFinite(db) || db > 0 || db < -60) return toast.error("Volume musik antara -60 dan 0 dB.");
     if (allowed.length === 0) return toast.error("Pilih minimal satu jenis visual.");
     if (!TIME_RE.test(publishTime.trim())) return toast.error("Jam tayang berbentuk JJ:MM, mis. 18:00.");
+    if (!TIME_RE.test(runTime.trim())) return toast.error("Jam run harian berbentuk JJ:MM, mis. 05:17.");
     const queries = ytQueries
       .split(",")
       .map((q) => q.trim())
@@ -148,7 +150,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
           tts: { voice, rate },
           video: { caption_style: style, music_dir: musicDir.trim(), music_volume_db: db },
           visuals: { allowed_types: allowed },
-          schedule: { publish_time: publishTime.trim() },
+          schedule: { publish_time: publishTime.trim(), run_time: runTime.trim() },
           approval: { mode: approval },
           youtube: { api_upload: apiUpload, playlist_id: playlist.trim(), made_for_kids: kids },
           research: { youtube_search_queries: queries },
@@ -422,12 +424,19 @@ function SettingsForm({ settings }: { settings: Settings }) {
 
       <section className="flex flex-col gap-2">
         <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">Otomatis</p>
+        <div className="flex flex-col gap-1.5 sm:max-w-60">
+          <Label htmlFor="ch_run">Jam run harian (WIB)</Label>
+          <Input id="ch_run" value={runTime} onChange={(e) => setRunTime(e.target.value)} placeholder="05:17" />
+        </div>
         <Label className="cursor-pointer font-normal">
           <Checkbox checked={enabled} onCheckedChange={(v) => setEnabled(v === true)} />
           Aktifkan Channel Otomatis
         </Label>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          Jadwal harian belum tersedia, jadi sakelar ini belum menjalankan apa pun. Uji coba, unggah uji, kirim ke
+          Saat aktif, Nero menjalankan run harian sungguhan setiap hari pada jam run: membuat video, mengunggah bila
+          upload otomatis menyala, mengirim paket ke Telegram, dan laporan mingguan. Jadwal berjalan di dalam Nero,
+          jadi laptop dan Nero harus menyala; bila Nero baru dibuka setelah jam run, run hari itu langsung dikejar.
+          Bila jam run hari ini sudah lewat, run dimulai begitu Anda menyimpan. Uji coba, unggah uji, kirim ke
           Telegram, dan analisis dari halaman ini selalu bisa dipakai.
         </p>
       </section>

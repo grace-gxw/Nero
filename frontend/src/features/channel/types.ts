@@ -15,7 +15,7 @@ export type StepId =
   | "state_update"
   | "weekly_report";
 export type StepState = "antri" | "proses" | "selesai" | "dipakai" | "gagal" | "batal" | "lewat" | "belum";
-export type RunMode = "plan" | "video" | "media" | "upload" | "notify" | "analyst" | "report";
+export type RunMode = "plan" | "video" | "media" | "upload" | "notify" | "analyst" | "report" | "daily";
 export type JobStatus = "proses" | "selesai" | "gagal" | "batal";
 export type VisualType = "stock" | "ai_image" | "motion_graphic" | "plain";
 
@@ -133,6 +133,39 @@ export interface ChannelState {
   ready: ReadyItem[];
   youtube: YouTubeStatus;
   telegram: { configured: boolean };
+  schedule: ScheduleStatus;
+}
+
+export type ScheduleState =
+  | "menunggu"
+  | "berjalan"
+  | "selesai"
+  | "gagal"
+  | "dilewati"
+  | "dibatalkan"
+  | "menyerah"
+  | "jam_mundur";
+
+/** jadwal harian di dalam Nero (features/channel/scheduler.py status()) */
+export interface ScheduleStatus {
+  enabled: boolean;
+  /** "05:17" */
+  run_time: string;
+  timezone: string;
+  today: {
+    day: string;
+    state: ScheduleState;
+    attempts: number;
+    started_at: string;
+    finished_at: string;
+    next_retry: string;
+    note: string;
+  };
+  /** ISO waktu run berikutnya (kosong saat nonaktif) */
+  next_run: string;
+  max_attempts: number;
+  /** Nero dibuka otomatis saat Windows menyala; null = tidak diketahui */
+  autostart: boolean | null;
 }
 
 export interface Segment {
@@ -277,7 +310,7 @@ export interface ChannelConfig {
   video: { target_seconds: [number, number]; music_dir: string; music_volume_db: number; caption_style: string };
   tts: { engine: string; voice: string; rate: string; pause_ms: number };
   visuals: { allowed_types: Exclude<VisualType, "plain">[] };
-  schedule: { timezone: string; publish_time: string };
+  schedule: { timezone: string; publish_time: string; run_time: string };
   approval: { mode: "manual" | "review_window" | "auto" };
   youtube: {
     api_upload: boolean;

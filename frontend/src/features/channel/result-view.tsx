@@ -210,7 +210,7 @@ function VideoBox({ detail }: { detail: RunDetail }) {
       <div className="grid aspect-[9/16] w-full place-items-center rounded-lg bg-muted text-center text-xs text-muted-foreground sm:w-64">
         <span className="flex flex-col items-center gap-2 px-4">
           <ClapperboardIcon className="size-5" />
-          Uji coba tanggal ini sedang berjalan. Video tampil lagi setelah selesai.
+          Run tanggal ini sedang berjalan. Video tampil lagi setelah selesai.
         </span>
       </div>
     );
