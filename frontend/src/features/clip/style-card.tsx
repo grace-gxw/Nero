@@ -81,7 +81,7 @@ export function StyleCard() {
             <span className="block truncate text-xs text-muted-foreground">
               {running
                 ? `${Math.round((job?.progress ?? 0) * 100)}% · ${job?.stage}`
-                : "Tempel link TikTok / Reels / Shorts, AI membaca gaya editingnya"}
+                : "Link clip atau akun, file video, atau screenshot: AI membaca gaya editingnya"}
             </span>
           </span>
           <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />

@@ -17,8 +17,8 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
+import warnings
 import wave
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -186,6 +186,52 @@ def download_reference(url: str, out_dir: str, cookies_browser: str | None = Non
         raise RuntimeError("tidak bisa diunduh")
     return {"path": os.path.join(out_dir, files[0]), "title": info.get("title") or url,
             "duration": info.get("duration") or 0}
+
+
+_PROFILE_RE = [
+    re.compile(r"^https?://(www\.|m\.)?tiktok\.com/@[^/?#]+/?(\?.*)?$", re.I),
+    re.compile(r"^https?://(www\.|m\.)?youtube\.com/(@[^/?#]+|channel/[^/?#]+|c/[^/?#]+|user/[^/?#]+)"
+               r"(/(shorts|videos)?)?/?(\?.*)?$", re.I),
+    re.compile(r"^https?://(www\.)?instagram\.com/(?!p/|reel/|reels/|tv/|stories/)[^/?#]+/?(reels/?)?(\?.*)?$", re.I),
+]
+
+
+def is_profile_url(url: str) -> bool:
+    """Link akun/profil (bukan satu video): TikTok @akun, YouTube @channel, Instagram akun."""
+    return any(r.match((url or "").strip()) for r in _PROFILE_RE)
+
+
+def expand_profile(url: str, n: int = 3, cookies_browser: str | None = None) -> list[str]:
+    """Link beberapa video terbaru dari sebuah akun. YouTube: tab Shorts (lalu video biasa bila kosong)."""
+    import yt_dlp
+    url = url.strip()
+    cands = [url]
+    if "youtube.com" in url and not re.search(r"/(shorts|videos)/?(\?|$)", url):
+        cands = [url.rstrip("/") + "/shorts", url.rstrip("/") + "/videos"]
+    opts = {"extract_flat": "in_playlist", "playlistend": n, "quiet": True, "no_warnings": True, "noplaylist": False}
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
+    last = None
+    for c in cands:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(c, download=False) or {}
+        except Exception as e:  # mis. akun privat, TikTok menolak, Instagram minta login
+            last = e
+            continue
+        urls = []
+        for e in (info.get("entries") or [])[: n * 2]:
+            u = (e or {}).get("url") or (e or {}).get("webpage_url")
+            if u and not u.startswith("http") and "youtube" in c:
+                u = f"https://www.youtube.com/shorts/{u}"
+            if u and u.startswith("http") and u not in urls:
+                urls.append(u)
+            if len(urls) >= n:
+                break
+        if urls:
+            return urls
+    raise RuntimeError("video dari akun ini tidak bisa diambil" + (f" ({str(last)[:120]})" if last else "")
+                       + ". Coba tempel link videonya satu per satu, atau isi cookies browser di Pengaturan.")
 
 
 # --------------------------------------------------------------------------
@@ -887,12 +933,37 @@ CAPTION_FONTS = {
 }
 
 
+USER_FONTS: dict[str, str] = {}   # font tambahan pengguna: kunci "user-..." -> path berkas (diisi api.py)
+
+
+def register_user_fonts(mapping: dict[str, str]) -> None:
+    """Daftar font tambahan pengguna (dipanggil api.py saat mulai & setelah font ditambah/dihapus)."""
+    USER_FONTS.clear()
+    USER_FONTS.update(mapping)
+
+
+def font_path(key: str) -> str | None:
+    """Berkas font untuk sebuah kunci gaya: font tambahan pengguna, font di fonts/, atau font Windows."""
+    if key in USER_FONTS:
+        return USER_FONTS[key] if os.path.isfile(USER_FONTS[key]) else None
+    if key not in CAPTION_FONTS:
+        return None
+    file = CAPTION_FONTS[key][0]
+    dirs = [FONTS_DIR] + ([os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")] if os.name == "nt" else [])
+    return next((os.path.join(d, file) for d in dirs if os.path.isfile(os.path.join(d, file))), None)
+
+
 def _style_font(style: dict, size: int):
     """Font subtitle/judul sesuai pilihan gaya; bila berkasnya tidak ada, pakai font tebal bawaan."""
     return _font_by_key(style.get("caption_font", "impact"), size)
 
 
 def _font_by_key(key: str, size: int):
+    if key in USER_FONTS and os.path.isfile(USER_FONTS[key]):
+        try:
+            return _load_font(size, USER_FONTS[key])
+        except OSError:
+            pass   # berkas rusak: pakai font bawaan
     file, var = CAPTION_FONTS.get(key, CAPTION_FONTS["impact"])
     dirs = [FONTS_DIR] + ([os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")] if os.name == "nt" else [])
     for d in dirs:
@@ -945,15 +1016,60 @@ CAPTION_COLORS = {
     "oranye": (255, 140, 0), "ungu": (170, 90, 255), "toska": (0, 230, 190),
 }
 _STROKE = {1: (2, 22), 2: (4, 11), 3: (6, 7)}  # tingkat garis tepi -> (minimal px, ukuran font / angka ini)
+_HEX = re.compile(r"#?([0-9a-f]{6})")
 
 
-def _stroke_px(size: int, level) -> int:
-    """Tebal garis tepi huruf: 0 tanpa, 1 tipis, 2 sedang (bawaan), 3 tebal."""
+def color_rgb(v, default=(255, 255, 255)) -> tuple[int, int, int]:
+    """Warna gaya: nama (kuning, putih, ...) atau hex "#rrggbb" (warna persis hasil tiruan)."""
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in CAPTION_COLORS:
+            return CAPTION_COLORS[s]
+        m = _HEX.fullmatch(s)
+        if m:
+            h = m.group(1)
+            return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return default
+
+
+def _stroke_px(size: int, level, ratio=0) -> int:
+    """Tebal garis tepi huruf: 0 tanpa, 1 tipis, 2 sedang (bawaan), 3 tebal. ratio > 0 (hasil ukur clip referensi)
+    = tebal persis sebagai bagian dari ukuran font, menggantikan tingkat."""
+    try:
+        ratio = float(ratio or 0)
+    except (TypeError, ValueError):
+        ratio = 0
+    if ratio > 0:
+        return max(1, int(round(size * min(ratio, 0.3))))
     level = int(level or 0)
     if level <= 0:
         return 0
     lo, div = _STROKE[min(3, level)]
     return max(lo, size // div)
+
+
+_TEXTURE: list[np.ndarray] = []
+
+
+def _apply_texture(arr: np.ndarray, x0: int = 0, y0: int = 0) -> np.ndarray:
+    """Tekstur kasar seperti cetakan usang (bintik & lubang kecil) pada tulisan RGBA. Polanya tetap terhadap layar
+    (x0, y0 = letak gambar di layar), jadi tidak berkedip saat kata baru muncul."""
+    import cv2
+    if not _TEXTURE:
+        rng = np.random.default_rng(7)
+        coarse = cv2.resize(rng.random((OUT_H // 4, OUT_W // 4)).astype(np.float32), (OUT_W, OUT_H),
+                            interpolation=cv2.INTER_LINEAR)
+        fine = rng.random((OUT_H, OUT_W)).astype(np.float32)
+        _TEXTURE.append(((0.6 * coarse + 0.4 * fine) > 0.2).astype(np.uint8))
+    tex = _TEXTURE[0]
+    h, w = arr.shape[:2]
+    m = np.ones((h, w), np.uint8)
+    ys, xs = slice(max(0, y0), min(OUT_H, y0 + h)), slice(max(0, x0), min(OUT_W, x0 + w))
+    if ys.stop > ys.start and xs.stop > xs.start:
+        m[ys.start - y0:ys.stop - y0, xs.start - x0:xs.stop - x0] = tex[ys, xs]
+    out = arr.copy()
+    out[..., 3] = out[..., 3] * m
+    return out
 
 
 def _light(rgb) -> bool:
@@ -977,16 +1093,18 @@ class CaptionRenderer:
         self.font = _style_font(style, self.font_size)
         self.emphasis = bool(style.get("caption_emphasis", False))
         self.font_big = _style_font(style, int(self.font_size * 1.15)) if self.emphasis else self.font
-        self.hl = CAPTION_COLORS.get(style.get("caption_color", "kuning"), (255, 221, 0))
-        self.base = CAPTION_COLORS.get(style.get("caption_base", "putih"), (255, 255, 255))
+        self.hl = color_rgb(style.get("caption_color", "kuning"), (255, 221, 0))
+        self.base = color_rgb(style.get("caption_base", "putih"), (255, 255, 255))
         self.upper = style.get("caption_upper", True)
         self.y_ratio = float(style.get("caption_pos", 0.68))
         self.max_words = int(style.get("caption_words", 3))
         self.mode = style.get("caption_highlight", "warna")   # warna | kotak | karaoke | tanpa
         self.anim = style.get("caption_anim", "pop")          # pop | bounce | naik | tanpa
-        self.stroke = _stroke_px(self.font_size, style.get("caption_stroke", 2))
+        self.stroke = _stroke_px(self.font_size, style.get("caption_stroke", 2), style.get("caption_stroke_ratio"))
+        self.stroke_rgb = color_rgb(style.get("caption_stroke_color") or "#000000", (0, 0, 0))
         self.shadow = bool(style.get("caption_shadow", True))
         self.box = bool(style.get("caption_box", False))      # kotak gelap transparan di belakang subtitle
+        self.texture = bool(style.get("caption_texture", False))
         self.groups = self._group(words)
         self.cache = {}
 
@@ -1072,10 +1190,12 @@ class CaptionRenderer:
                     d.text((x + max(3, size // 22), y + dy + max(4, size // 15)), words[i], font=f,
                            fill=(0, 0, 0, 140), stroke_width=sw, stroke_fill=(0, 0, 0, 140))
                 d.text((x, y + dy), words[i], font=f, fill=color + (255,),
-                       stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+                       stroke_width=sw, stroke_fill=self.stroke_rgb + (255,))
                 x += widths[i] + space
             y += lh
         arr = np.array(img)
+        if self.texture:
+            arr = _apply_texture(arr, 0, int(OUT_H * self.y_ratio - arr.shape[0] / 2))
         self.cache[key] = arr
         return arr
 
@@ -1104,6 +1224,201 @@ class CaptionRenderer:
                 return
 
 
+_SMALL_WORDS = set("""
+dia aku kamu kita kami mereka ini itu yang di ke dari dan atau tapi pada untuk dengan dalam akan sudah lagi
+juga saja aja ya kan pun si sang para nya gue lu lo kau ia jadi ada adalah oleh bagi
+the a an of to in on at and or is are it be as by for
+""".split())
+
+
+class KineticRenderer:
+    """Teks kinetik (seperti edit motivasi/podcast di TikTok): kata muncul satu per satu dan BERTUMPUK dalam satu
+    frasa. Kata penting besar, kata sambung kecil, baris kecil bergantian rata kanan/tengah, kata besar rata kiri.
+    Frasa berganti di akhir kalimat, jeda, atau setelah `kinetic_lines` baris. Letak tiap kata dihitung untuk seluruh
+    frasa sejak awal, jadi tulisan tidak bergeser saat kata berikutnya muncul."""
+
+    BIG, MID, SMALL = 1.0, 0.72, 0.5
+
+    def __init__(self, words, style):
+        self.style = style
+        self.size = int(style.get("caption_size", 86))
+        self.y_ratio = float(style.get("caption_pos", 0.5))
+        self.upper = style.get("caption_upper", True)
+        self.base = color_rgb(style.get("caption_base", "putih"), (255, 255, 255))
+        self.hl = color_rgb(style.get("caption_color", "kuning"), (255, 221, 0))
+        self.mode = style.get("caption_highlight", "tanpa")
+        self.anim = style.get("caption_anim", "pop")
+        self.stroke_level = style.get("caption_stroke", 2)
+        self.stroke_ratio = style.get("caption_stroke_ratio")
+        self.stroke_rgb = color_rgb(style.get("caption_stroke_color") or "#000000", (0, 0, 0))
+        self.shadow = bool(style.get("caption_shadow", True))
+        self.texture = bool(style.get("caption_texture", False))
+        self.max_lines = max(1, min(5, int(style.get("kinetic_lines", 3) or 3)))
+        self._fonts: dict[int, object] = {}
+        self.phrases = self._layout(self._phrases(words))
+        self.cache: dict[tuple, tuple] = {}
+
+    def _font(self, size: int):
+        if size not in self._fonts:
+            self._fonts[size] = _style_font(self.style, size)
+        return self._fonts[size]
+
+    @classmethod
+    def weight(cls, word: str) -> float:
+        w = word.lower().strip(".,!?\"'()")
+        if w in _SMALL_WORDS or len(w) <= 2:
+            return cls.SMALL
+        if _is_key_word(word) or len(w) >= 5:
+            return cls.BIG
+        return cls.MID
+
+    def _phrases(self, words) -> list[list[dict]]:
+        phrases, cur = [], []
+        for w in words:
+            txt = _clean_text(w["word"]).strip()
+            if not txt:
+                continue
+            if cur and (len(cur) >= 6 or w["start"] - cur[-1]["e"] > 0.45 or cur[-1]["w"].endswith((".", "!", "?"))):
+                phrases.append(cur)
+                cur = []
+            cur.append({"s": w["start"], "e": w["end"], "w": txt.strip(","), "k": self.weight(txt)})
+        if cur:
+            phrases.append(cur)
+        return phrases
+
+    def _layout(self, phrases) -> list[dict]:
+        """Baris & letak setiap kata. Kata besar/sedang satu baris sendiri; kata kecil berdua dalam satu baris."""
+        from PIL import Image, ImageDraw
+        d0 = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+        out = []
+        for ph in phrases:
+            lines, small = [], []
+            for w in ph:
+                if w["k"] == self.SMALL and len(small) < 2:
+                    small.append(w)
+                    continue
+                if small:
+                    lines.append(small)
+                    small = []
+                if w["k"] == self.SMALL:
+                    small = [w]
+                else:
+                    lines.append([w])
+            if small:
+                lines.append(small)
+            # frasa terlalu banyak baris: dipecah menjadi beberapa tampilan
+            for k in range(0, len(lines), self.max_lines):
+                out.append(self._place(lines[k:k + self.max_lines], d0))
+        for i, p in enumerate(out):   # tampil sampai frasa berikutnya muncul (paling lama 0,6 dtk setelah kata terakhir)
+            nxt = out[i + 1]["s"] if i + 1 < len(out) else p["e"] + 0.6
+            p["end"] = min(nxt, p["e"] + 0.6)
+        return out
+
+    def _place(self, lines, d0) -> dict:
+        max_w = OUT_W - 120
+        rows = []
+        for li, line in enumerate(lines):
+            k = max(w["k"] for w in line)
+            size = int(self.size * k)
+            texts = [(w["w"].upper() if self.upper else w["w"]) for w in line]
+            font = self._font(size)
+            width = d0.textlength(" ".join(texts), font=font)
+            if width > max_w:   # kata sangat panjang: kecilkan supaya muat layar
+                size = max(20, int(size * max_w / width))
+                font = self._font(size)
+                width = d0.textlength(" ".join(texts), font=font)
+            align = "left" if k == self.BIG else ("right" if li % 2 == 0 else "center")
+            rows.append({"words": line, "texts": texts, "size": size, "font": font, "w": width, "align": align})
+        block_w = max(r["w"] for r in rows)
+        x0 = (OUT_W - block_w) / 2
+        stroke = max(_stroke_px(r["size"], self.stroke_level, self.stroke_ratio) for r in rows)
+        margin = stroke * 2 + max(4, self.size // 15) + 8
+        y = margin
+        placed = []   # (kata, teks, font, x, y) relatif terhadap gambar frasa
+        for r in rows:
+            x = x0 + {"left": 0, "right": block_w - r["w"], "center": (block_w - r["w"]) / 2}[r["align"]]
+            space = d0.textlength(" ", font=r["font"])
+            for w, t in zip(r["words"], r["texts"]):
+                placed.append((w, t, r["font"], x, y))
+                x += d0.textlength(t, font=r["font"]) + space
+            y += int(r["size"] * (0.92 if self.upper else 1.05))   # baris rapat seperti edit aslinya
+        height = int(y + margin)
+        return {"s": placed[0][0]["s"], "e": placed[-1][0]["e"], "placed": placed, "h": height,
+                "top": int(OUT_H * self.y_ratio - height / 2)}
+
+    def _draw_word(self, d, item, color):
+        w, t, font, x, y = item
+        sw = _stroke_px(font.size, self.stroke_level, self.stroke_ratio)
+        if self.shadow:
+            d.text((x + max(3, font.size // 22), y + max(4, font.size // 15)), t, font=font, fill=(0, 0, 0, 140),
+                   stroke_width=sw, stroke_fill=(0, 0, 0, 140))
+        d.text((x, y), t, font=font, fill=color + (255,), stroke_width=sw, stroke_fill=self.stroke_rgb + (255,))
+
+    def _images(self, pi: int, n: int):
+        """(gambar kata 0..n-2, gambar kata ke-n saja beserta letaknya) untuk frasa pi."""
+        from PIL import Image, ImageDraw
+        key = (pi, n)
+        if key in self.cache:
+            return self.cache[key]
+        p = self.phrases[pi]
+        base = Image.new("RGBA", (OUT_W, p["h"]), (0, 0, 0, 0))
+        d = ImageDraw.Draw(base)
+        for item in p["placed"][:n - 1]:
+            color = self.hl if self.mode == "karaoke" else self.base
+            self._draw_word(d, item, color)
+        item = p["placed"][n - 1]
+        _, t, font, x, y = item
+        sw = _stroke_px(font.size, self.stroke_level, self.stroke_ratio)
+        pad = sw * 2 + max(4, font.size // 15) + 6
+        tw = int(ImageDraw.Draw(Image.new("RGBA", (10, 10))).textlength(t, font=font))
+        word = Image.new("RGBA", (tw + 2 * pad, int(font.size * 1.3) + 2 * pad), (0, 0, 0, 0))
+        dw = ImageDraw.Draw(word)
+        color = self.hl if self.mode in ("warna", "karaoke") else self.base
+        if self.mode == "kotak":
+            _, ct, _, cb = dw.textbbox((pad, pad), "H", font=font)
+            dw.rounded_rectangle((pad - font.size * 0.12, ct - font.size * 0.1, pad + tw + font.size * 0.12,
+                                  cb + font.size * 0.1), radius=int(font.size * 0.18), fill=self.hl + (255,))
+            color = (15, 15, 15) if _light(self.hl) else (255, 255, 255)
+        self._draw_word(dw, (None, t, font, pad, pad), color)
+        base_arr, word_arr = np.array(base), np.array(word)
+        wx, wy = int(x) - pad, int(y) - pad      # letak gambar kata di dalam gambar frasa
+        if self.texture:
+            base_arr = _apply_texture(base_arr, 0, p["top"])
+            word_arr = _apply_texture(word_arr, wx, p["top"] + wy)
+        self.cache[key] = (base_arr, word_arr, wx, wy)
+        if len(self.cache) > 64:
+            self.cache.pop(next(iter(self.cache)))
+        return self.cache[key]
+
+    def draw(self, frame, t):
+        for pi, p in enumerate(self.phrases):
+            if not p["s"] <= t < p["end"]:
+                continue
+            n = sum(1 for w, *_ in p["placed"] if w["s"] <= t)
+            base, word, wx, wy = self._images(pi, max(1, n))
+            _blend(frame, base, 0, p["top"])
+            age = t - p["placed"][max(1, n) - 1][0]["s"]
+            scale, dy, alpha = 1.0, 0, 1.0
+            if self.anim == "pop" and age < 0.08:
+                scale = 0.85 + age / 0.08 * 0.15
+            elif self.anim == "bounce" and age < 0.2:
+                k = age / 0.2
+                scale = 0.6 + 0.52 * k / 0.55 if k < 0.55 else 1.12 - 0.12 * (k - 0.55) / 0.45
+            elif self.anim == "naik" and age < 0.15:
+                k = age / 0.15
+                dy, alpha = int((1 - k) * 0.4 * self.size), k
+            if scale != 1.0:
+                small = _resize_rgba(word, scale)
+                cx, cy = wx + word.shape[1] / 2, wy + word.shape[0] / 2
+                _blend(frame, small, int(cx - small.shape[1] / 2), int(p["top"] + cy - small.shape[0] / 2))
+            else:
+                if alpha < 1.0:
+                    word = word.copy()
+                    word[..., 3] = (word[..., 3] * alpha).astype(np.uint8)
+                _blend(frame, word, wx, p["top"] + wy + dy)
+            return
+
+
 def _title_image(title: str, style) -> np.ndarray:
     from PIL import Image, ImageDraw
     title = _clean_text(title).strip()
@@ -1124,16 +1439,18 @@ def _title_image(title: str, style) -> np.ndarray:
     lines = lines[:3]
     lh = int(size * 1.22)
     bg = style.get("title_bg", "putih")
+    custom_text = style.get("title_text") or ""   # warna tulisan judul persis (hex), "" = otomatis
     if bg == "tanpa":  # tulisan putih bergaris tepi hitam tanpa kotak
         stroke = max(3, size // 10)
         tw = int(max(d0.textlength(l, font=font) for l in lines)) if lines else 0
         img = Image.new("RGBA", (tw + stroke * 4 + 16, lh * len(lines) + stroke * 4 + 16), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         y = stroke * 2 + 4
+        fg = color_rgb(custom_text, (255, 255, 255)) + (255,)
         for l in lines:
             x = (img.width - d.textlength(l, font=font)) / 2
             d.text((x + 4, y + 6), l, font=font, fill=(0, 0, 0, 130), stroke_width=stroke, stroke_fill=(0, 0, 0, 130))
-            d.text((x, y), l, font=font, fill=(255, 255, 255, 255), stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
+            d.text((x, y), l, font=font, fill=fg, stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
             y += lh
         return np.array(img)
     pad_x, pad_y = 40, 26
@@ -1141,7 +1458,13 @@ def _title_image(title: str, style) -> np.ndarray:
     bw, bh = tw + pad_x * 2, lh * len(lines) + pad_y * 2
     img = Image.new("RGBA", (bw + 16, bh + 16), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    fill, txt = TITLE_BOXES.get(bg, TITLE_BOXES["putih"])
+    if bg in TITLE_BOXES:
+        fill, txt = TITLE_BOXES[bg]
+    else:   # warna kotak persis (hex) hasil tiruan; tulisan gelap di kotak terang, putih di kotak gelap
+        rgb = color_rgb(bg, (255, 255, 255))
+        fill, txt = rgb + (250,), (10, 10, 10) if _light(rgb) else (255, 255, 255)
+    if custom_text:
+        txt = color_rgb(custom_text, txt)
     d.rounded_rectangle((8 + 6, 8 + 8, 8 + bw + 6, 8 + bh + 8), radius=28, fill=(0, 0, 0, 90))
     d.rounded_rectangle((8, 8, 8 + bw, 8 + bh), radius=28, fill=fill)
     y = 8 + pad_y
@@ -1333,10 +1656,11 @@ def _zoom(img: np.ndarray, z: float, cx: float = 0.5, cy: float = 0.42) -> np.nd
     return cv2.resize(img[y0:y0 + h, x0:x0 + w], (W, H), interpolation=cv2.INTER_LINEAR)
 
 
-def _zoom_plan(mode: str, words: list[dict], dur: float):
+def _zoom_plan(mode: str, words: list[dict], dur: float, punch: float = ZOOM_PUNCH):
     """Fungsi waktu (detik video hasil) -> perbesaran, atau None bila tanpa zoom.
     halus : maju-mundur pelan (seperti kamera bernapas), siklus 8 detik
-    hentak: berganti dekat/jauh di akhir kalimat atau jeda, seperti jump cut (paling cepat tiap 2,5 detik)"""
+    hentak: berganti dekat/jauh di akhir kalimat atau jeda, seperti jump cut (paling cepat tiap 2,5 detik);
+            punch = perbesaran saat dekat (zoom_scale, bisa hasil ukur clip referensi)"""
     import bisect
     if mode == "halus":
         return lambda t: 1.0 + 0.07 * (0.5 - 0.5 * math.cos(2 * math.pi * t / 8.0))
@@ -1351,7 +1675,14 @@ def _zoom_plan(mode: str, words: list[dict], dur: float):
             last = t
     if not words:
         switches = [float(x) for x in np.arange(4.0, max(4.0, dur), 4.0)]
-    return lambda t: ZOOM_PUNCH if bisect.bisect_right(switches, t) % 2 else 1.0
+    return lambda t: punch if bisect.bisect_right(switches, t) % 2 else 1.0
+
+
+def zoom_scale(style: dict) -> float:
+    try:
+        return float(np.clip(float(style.get("zoom_scale") or ZOOM_PUNCH), 1.03, 1.6))
+    except (TypeError, ValueError):
+        return ZOOM_PUNCH
 
 
 FILTERS = ("asli", "cerah", "hangat", "dingin", "hitamputih", "sinematik", "pudar")
@@ -1412,7 +1743,9 @@ class FrameComposer:
         cap_style = dict(style)
         if layout == "split":
             cap_style["caption_pos"] = 0.5  # di garis tengah, tidak menutupi wajah
-        self.cap = CaptionRenderer(words, cap_style) if style.get("captions", True) and words else None
+        renderer = KineticRenderer if style.get("caption_mode") == "kinetik" else CaptionRenderer
+        self.cap = renderer(words, cap_style) if style.get("captions", True) and words else None
+        self.broll_fit = style.get("broll_fit", "hitam")
         self.title_img = _title_image(title, style) if style.get("title_on", True) and title.strip() else None
         self.title_secs = float(style.get("title_secs", 0) or 0)  # 0 = sepanjang video
         self.title_y = int(OUT_H * float(style.get("title_pos", 0.11)))
@@ -1421,10 +1754,17 @@ class FrameComposer:
         self.handle_y = int(OUT_H * (0.035 if style.get("handle_pos") == "atas" else 0.84))
         self.bar_on = style.get("progress_bar", True)
         self.bar_top = style.get("progress_pos") == "atas"
-        self.bar_color = CAPTION_COLORS.get(style.get("caption_color", "kuning"), (255, 221, 0))[::-1]
+        # warna progress bar: ikut warna sorotan, atau warna persis (progress_color) hasil tiruan
+        self.bar_color = color_rgb(style.get("progress_color") or style.get("caption_color", "kuning"),
+                                   (255, 221, 0))[::-1]
+        try:
+            self.bar_h = int(np.clip(int(style.get("progress_h") or 14), 2, 60))
+        except (TypeError, ValueError):
+            self.bar_h = 14
         # zoom tidak dipakai pada tata letak dua orang (garis tengahnya ikut bergeser)
         self.zoom_mode = style.get("zoom", "tanpa") if layout != "split" else "tanpa"
-        self.zoom = _zoom_plan(self.zoom_mode, words or [], self.n_frames / OUT_FPS)
+        self.zoom_punch = zoom_scale(style)
+        self.zoom = _zoom_plan(self.zoom_mode, words or [], self.n_frames / OUT_FPS, self.zoom_punch)
         self.grade = _grade_fn(style.get("filter"))
         self.crop_w = min(sw, int(sh * 9 / 16))
         self.fg_h = int(OUT_W * sh / sw)
@@ -1471,6 +1811,33 @@ class FrameComposer:
         z = zoom if zoom is not None else (self.zoom(t) if self.zoom else 1.0)
         if z > 1.001 and self.layout != "split":
             out = _zoom(out, z)
+        return self._overlay(out, i, t)
+
+    def frame_broll(self, bf, i, t=None):
+        """Frame sisipan b-roll: klip b-roll (lebar 1080) disusun sesuai broll_fit, lalu judul/subtitle/progress
+        bar yang sama seperti frame biasa (suara tetap dari video sumber)."""
+        import cv2
+        t = i / OUT_FPS if t is None else t
+        h = bf.shape[0]
+        if self.broll_fit == "penuh":       # memenuhi layar 9:16, sisi yang lebih panjang dipotong
+            scale = max(OUT_W / bf.shape[1], OUT_H / h)
+            r = cv2.resize(bf, (int(bf.shape[1] * scale + 0.5), int(h * scale + 0.5)), interpolation=cv2.INTER_LINEAR)
+            yo, xo = (r.shape[0] - OUT_H) // 2, (r.shape[1] - OUT_W) // 2
+            out = np.ascontiguousarray(r[yo:yo + OUT_H, xo:xo + OUT_W])
+        else:                               # hitam / blur: klip utuh di tengah
+            if self.broll_fit == "blur":
+                small = cv2.resize(bf, (OUT_W // 8, OUT_H // 8), interpolation=cv2.INTER_AREA)
+                small = cv2.convertScaleAbs(cv2.GaussianBlur(small, (0, 0), 6), alpha=0.55)
+                out = cv2.resize(small, (OUT_W, OUT_H), interpolation=cv2.INTER_LINEAR)
+            else:
+                out = np.zeros((OUT_H, OUT_W, 3), np.uint8)
+            if h > OUT_H:                   # klip vertikal yang lebih tinggi dari layar: ambil bagian tengah
+                bf, h = bf[(h - OUT_H) // 2:(h - OUT_H) // 2 + OUT_H], OUT_H
+            y0 = (OUT_H - h) // 2
+            out[y0:y0 + h] = bf[:, :OUT_W]
+        return self._overlay(out, i, t)
+
+    def _overlay(self, out, i, t):
         if self.grade is not None:
             out = self.grade(out)
         if self.title_img is not None and (self.title_secs <= 0 or t < self.title_secs):
@@ -1482,9 +1849,9 @@ class FrameComposer:
         if self.bar_on:
             bw = int(OUT_W * min(1.0, (i + 1) / self.n_frames))
             if self.bar_top:
-                out[:14, :bw] = self.bar_color
+                out[:self.bar_h, :bw] = self.bar_color
             else:
-                out[OUT_H - 14:OUT_H, :bw] = self.bar_color
+                out[OUT_H - self.bar_h:OUT_H, :bw] = self.bar_color
         return out
 
 
@@ -1560,8 +1927,115 @@ def clip_timeline(words, start: float, end: float, style: dict) -> tuple[list[tu
     return keep, rel
 
 
+BROLL_EXT = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+_DUR_CACHE: dict[tuple, float] = {}
+
+
+def _media_duration(path: str) -> float:
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return 0.0
+    if key not in _DUR_CACHE:
+        try:
+            _DUR_CACHE[key] = probe(path).duration
+        except Exception:
+            _DUR_CACHE[key] = 0.0
+    return _DUR_CACHE[key]
+
+
+def plan_broll(style: dict, n_frames: int, files: list[str], seed: str = "") -> list[dict]:
+    """Sisipan b-roll dalam nomor frame video hasil: [{k, m, path, offset}] (frame k..m-1 diganti klip `path`
+    mulai detik `offset`). Pembicara tampil dulu `broll_after` detik, lalu bergantian: b-roll `broll_len` detik,
+    pembicara `broll_every` detik. Detik terakhir selalu pembicara. Urutan & potongan klip tetap untuk seed sama."""
+    import random
+    if not style.get("broll") or not files:
+        return []
+
+    def num(key, default, lo, hi):
+        try:
+            return float(np.clip(float(style.get(key, default)), lo, hi))
+        except (TypeError, ValueError):
+            return default
+    every, length, after = num("broll_every", 5, 1, 60), num("broll_len", 2.5, 0.5, 15), num("broll_after", 3, 0, 60)
+    rng = random.Random(seed)
+    order = list(files)
+    rng.shuffle(order)
+    out, t, j, bad = [], after, 0, 0
+    end_limit = n_frames / OUT_FPS - 1.0
+    while t + 0.5 <= end_limit and bad < len(order):
+        path = order[j % len(order)]
+        j += 1
+        dur = _media_duration(path)
+        if dur < 0.5:
+            bad += 1
+            continue
+        bad = 0
+        seg = min(length, dur, end_limit - t)
+        if seg < 0.5:
+            break
+        k = int(round(t * OUT_FPS))
+        out.append({"k": k, "m": min(n_frames, k + int(round(seg * OUT_FPS))), "path": path,
+                    "offset": round(rng.uniform(0, max(0.0, dur - seg)), 2)})
+        t += seg + every
+    return out
+
+
+class _BrollFeed:
+    """Membaca frame b-roll berurutan untuk frame video hasil i (selalu naik). Satu proses ffmpeg per sisipan;
+    klip yang habis lebih cepat mengulang frame terakhirnya."""
+
+    def __init__(self, plan: list[dict]):
+        self.plan, self.idx, self.proc, self.last = plan, 0, None, None
+        self.h = self.fb = 0
+
+    def get(self, i: int):
+        while self.idx < len(self.plan) and i >= self.plan[self.idx]["m"]:
+            self.close()
+            self.idx += 1
+        if self.idx >= len(self.plan) or i < self.plan[self.idx]["k"]:
+            return None
+        if self.proc is None:
+            self._open(self.plan[self.idx])
+        if self.proc is not None:
+            buf = self.proc.stdout.read(self.fb)
+            if len(buf) == self.fb:
+                self.last = np.frombuffer(buf, np.uint8).reshape(self.h, OUT_W, 3)
+        if self.last is None:
+            self.last = np.zeros((OUT_H, OUT_W, 3), np.uint8)
+        return self.last
+
+    def _open(self, seg: dict):
+        self.last = None
+        try:
+            info = probe(seg["path"])
+        except Exception:
+            return
+        self.h = max(2, int(round(info.height * OUT_W / max(1, info.width) / 2)) * 2)
+        self.fb = OUT_W * self.h * 3
+        secs = (seg["m"] - seg["k"]) / OUT_FPS + 0.2
+        self.proc = subprocess.Popen(
+            [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-ss", f"{seg['offset']:.3f}", "-t", f"{secs:.3f}",
+             "-i", seg["path"], "-an", "-vf", f"fps={OUT_FPS},scale={OUT_W}:{self.h}", "-f", "rawvideo",
+             "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_popen_kwargs())
+
+    def close(self):
+        if self.proc is not None:
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            self.proc.wait()
+            self.proc = None
+
+
 def render_clip(src: str, start: float, end: float, out_path: str, words: list[dict],
-                style: dict, title: str = "", progress=None) -> str:
+                style: dict, title: str = "", progress=None, broll_files: list[str] | None = None) -> str:
+    """broll_files: klip pustaka b-roll pengguna (hanya dipakai bila gaya menyalakan `broll`)."""
     global _ENCODER
     info = probe(src)
     dur = max(0.5, end - start)
@@ -1578,15 +2052,17 @@ def render_clip(src: str, start: float, end: float, out_path: str, words: list[d
         split = [(xs[np.minimum(idx, len(xs) - 1)], ys[np.minimum(idx, len(ys) - 1)]) for xs, ys in split] \
             if split else None
     comp = FrameComposer(sw, sh, layout, cam, split, style, rel, title, n_frames)
+    broll = plan_broll(style, n_frames, broll_files or [], seed=os.path.basename(out_path))
     enc = video_encoder()
     try:
-        _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frames, out_path, enc, progress)
+        _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frames, out_path, enc, progress,
+                     broll)
     except RuntimeError:
         if enc != "h264_nvenc":
             raise
         _ENCODER = "libx264"  # NVENC sempat lolos uji tapi gagal di sini: ulangi dengan CPU
         _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frames, out_path, _ENCODER,
-                     progress)
+                     progress, broll)
     # thumbnail
     try:
         run_ffmpeg(["-ss", f"{min(1.0, n_frames / fps / 2):.2f}", "-i", out_path, "-frames:v", "1",
@@ -1596,8 +2072,10 @@ def render_clip(src: str, start: float, end: float, out_path: str, words: list[d
     return out_path
 
 
-def _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frames, out_path, enc, progress):
+def _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frames, out_path, enc, progress,
+                 broll=()):
     fps = OUT_FPS
+    feed = _BrollFeed(list(broll)) if broll else None
     vf = f"fps={fps}"
     if not full:  # ambil frame k..m-1 dari tiap potongan lalu sambung (batas di tengah antar-frame)
         cond = "+".join(f"gte(t,{(k - 0.5) / fps:.4f})*lt(t,{(m - 0.5) / fps:.4f})" for k, m in keep)
@@ -1643,7 +2121,13 @@ def _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frame
                     if len(buf) < frame_bytes:
                         n_frames = read
                         break
-                    pending.append(pool.submit(comp.frame, np.frombuffer(buf, np.uint8).reshape(sh, sw, 3), read))
+                    # frame sumber tetap dibaca saat b-roll tampil, supaya urutan & suaranya tetap sinkron
+                    bf = feed.get(read) if feed else None
+                    if bf is not None:
+                        pending.append(pool.submit(comp.frame_broll, bf, read))
+                    else:
+                        pending.append(pool.submit(comp.frame, np.frombuffer(buf, np.uint8).reshape(sh, sw, 3),
+                                                   read))
                     read += 1
                 if not pending:
                     break
@@ -1664,6 +2148,8 @@ def _encode_clip(src, start, dur, keep, full, info, style, sw, sh, comp, n_frame
             dec.stdout.close()
             dec.wait()
             proc.wait()
+            if feed:
+                feed.close()
     if failed or proc.returncode != 0 or not os.path.exists(tmp_out):
         with open(err_path, "rb") as f:
             raise RuntimeError("Render gagal: " + f.read().decode("utf-8", "ignore")[-600:])
@@ -1733,7 +2219,7 @@ def render_preview(src: str | None, t: float, words: list[dict], style: dict, ti
     tt = (rel[1] if len(rel) > 1 else rel[0])["start"] + 0.1  # kata ke-2 sedang disorot
     comp = FrameComposer(sw, sh, layout, cam, split, style, rel, title, 100)
     # efek zoom ditampilkan pada keadaan "dekat" supaya terlihat bedanya
-    z = {"hentak": ZOOM_PUNCH, "halus": 1.05}.get(comp.zoom_mode)
+    z = {"hentak": comp.zoom_punch, "halus": 1.05}.get(comp.zoom_mode)
     out = comp.frame(f, 34, t=tt, zoom=z)
     small = cv2.resize(out, (width, int(width * OUT_H / OUT_W)), interpolation=cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 88])
@@ -1868,7 +2354,8 @@ def _read_frames(path, info: VideoInfo, fps: float, secs: float, width: int) -> 
 
 def _text_masks(frames) -> np.ndarray:
     """Piksel 'teks bergaris tepi': terang (putih / warna mencolok) yang menempel piksel sangat gelap.
-    Cocok untuk subtitle ber-outline hitam dan teks gelap di kotak terang."""
+    Cocok untuk subtitle ber-outline hitam dan teks gelap di kotak terang. Juga tulisan putih di kotak berwarna
+    sedang (biru, merah, ungu): putih yang bersebelahan dengan piksel yang jauh lebih gelap (kecerahan, bukan V)."""
     import cv2
     k = np.ones((5, 5), np.uint8)
     out = np.empty(frames.shape[:3], np.uint8)
@@ -1877,7 +2364,13 @@ def _text_masks(frames) -> np.ndarray:
         s, v = hsv[..., 1], hsv[..., 2]
         bright = (v >= 185) & ((s <= 70) | (s >= 140))
         near_dark = cv2.dilate((v <= 60).astype(np.uint8), k) > 0
-        out[i] = bright & near_dark
+        gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.int16)
+        on_color = ((v >= 200) & (s <= 60) & (cv2.erode(gray, k) <= gray - 100)).astype(np.uint8)
+        # bintik putih tunggal (bintik video, noise) dibuang; goresan huruf selebar >= 2 piksel tetap
+        on_color = cv2.morphologyEx(on_color, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        # tepi kotak putih di atas video yang lebih gelap = garis panjang mendatar, bukan huruf: buang barisnya
+        on_color[on_color.mean(axis=1) > 0.25] = 0
+        out[i] = (bright & near_dark) | (on_color > 0)
     return out
 
 
@@ -1926,52 +2419,158 @@ def _hue_name(deg: float) -> str:
     return min(_HUE_NAMES, key=lambda x: abs(x[1] - deg))[0]
 
 
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
 def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> dict:
-    """Tebak gaya video pendek dari clip contoh, tanpa AI.
+    """Tebak gaya video pendek dari clip contoh, tanpa AI. Video tegak, horizontal, maupun persegi.
     Hasil: {"style": {kunci gaya yang terdeteksi}, "notes": [catatan untuk pengguna], "seconds": durasi dibaca,
-            "debug": angka mentah untuk kalibrasi}. Kunci yang tidak yakin tidak diisi (pengaturan lama dipakai)."""
-    import cv2
+            "debug": angka mentah untuk kalibrasi, "measure": data untuk pembacaan lanjutan (AI)}.
+    Kunci yang tidak yakin tidak diisi (pengaturan lama dipakai)."""
     info = probe(path)
-    if info.width > info.height * 0.9:
-        raise RuntimeError("clip referensi bukan video vertikal (9:16), gayanya tidak bisa ditiru")
-    frames = _read_frames(path, info, fps, secs, ANALYZE_WIDTH)
+    width = ANALYZE_WIDTH if info.width <= info.height else int(round(ANALYZE_WIDTH * info.width / info.height / 2)) * 2
+    frames = _read_frames(path, info, fps, secs, width)
     if len(frames) < 6:
         raise RuntimeError("video referensi terlalu pendek atau tidak bisa dibaca")
+    res = _analyze_frames(frames, fps, still=False)
+    times = res["measure"].get("caption_times") or []
+    title_times = res["measure"].get("title_times") or []
+    pick = sorted({*times[:: max(1, len(times) // 4)][:4], *title_times[:1]})
+    hires = [f for t in pick if (f := _grab_frame(path, t)) is not None]
+    by_time = dict(zip(pick, hires))
+    title_frame = next((by_time[t] for t in title_times if t in by_time), None)
+    _exact(res, [by_time[t] for t in pick if t in times and t in by_time] or hires, title_frame)
+    return res
+
+
+def analyze_reference_images(paths: list[str]) -> dict:
+    """Tebak gaya dari gambar/screenshot (satu atau beberapa). Tanpa gerak: progress bar, zoom, animasi, dan
+    lama tampil judul tidak bisa dibaca dari gambar diam."""
+    import cv2
+    imgs = []
+    for p in paths:
+        im = cv2.imdecode(np.fromfile(p, np.uint8), cv2.IMREAD_COLOR)
+        if im is not None:
+            imgs.append(im)
+    if not imgs:
+        raise RuntimeError("gambar referensi tidak bisa dibaca")
+    h0, w0 = imgs[0].shape[:2]
+    k = ANALYZE_WIDTH / min(h0, w0)
+    W, H = int(round(w0 * k / 2)) * 2, int(round(h0 * k / 2)) * 2
+    small = [cv2.resize(im, (W, H), interpolation=cv2.INTER_AREA) for im in imgs]
+    reps = max(1, -(-6 // len(small)))   # paling sedikit 6 frame: tiap gambar diulang
+    frames = np.stack([im for im in small for _ in range(reps)])
+    res = _analyze_frames(frames, 1.0, still=True)
+    full = [cv2.resize(im, (int(w0 * min(1.0, 1080 / min(h0, w0))), int(h0 * min(1.0, 1080 / min(h0, w0)))))
+            for im in imgs]
+    _exact(res, full, full[0])
+    res["seconds"] = 0
+    res["notes"].append("Dibaca dari gambar: progress bar, zoom, animasi, dan lama tampil judul tidak ikut ditiru.")
+    return res
+
+
+def _grab_frame(path: str, t: float, short: int = 1080):
+    """Satu frame resolusi asli (sisi pendek paling banyak `short`) untuk pengukuran persis."""
+    try:
+        info = probe(path)
+    except Exception:
+        return None
+    k = min(1.0, short / min(info.width, info.height))
+    w, h = int(round(info.width * k / 2)) * 2, int(round(info.height * k / 2)) * 2
+    r = subprocess.run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", path,
+                        "-frames:v", "1", "-vf", f"scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, **_popen_kwargs())
+    if len(r.stdout) < w * h * 3:
+        return None
+    return np.frombuffer(r.stdout[:w * h * 3], np.uint8).reshape(h, w, 3)
+
+
+def _analyze_frames(frames: np.ndarray, fps: float, still: bool) -> dict:
+    """Inti pembacaan gaya dari frame kecil (sisi pendek ANALYZE_WIDTH). still=True: gambar diam (screenshot)."""
+    import cv2
     T, H, W = frames.shape[:3]
+    short = min(W, H)
+    vertical = H >= W * 1.1
     M = _text_masks(frames)
     ink = M.mean(axis=2)                      # (T, H): porsi piksel teks per baris
     on = ink > 0.03
     style, notes, dbg = {}, [], {}
-    extra = {"caption_band": None, "caption_times": [], "title_band": None}   # untuk pembacaan lanjutan oleh AI
+    extra = {"caption_band": None, "caption_times": [], "title_band": None, "title_times": [],
+             "short": short, "vertical": vertical}
     excluded = np.zeros(H, bool)              # baris berisi teks, diabaikan saat menilai tata letak
+    if not vertical:
+        notes.append("Referensi bukan video tegak: ukuran & posisi disesuaikan ke layar 9:16, tata letak "
+                     "tidak ditiru.")
+
+    # ---- b-roll / adegan campuran: sebagian frame berlatar hitam di atas & bawah (klip lain di tengah)
+    gray = frames.mean(axis=3, dtype=np.float32)
+    lb = np.zeros(T, bool)
+    if vertical and not still:
+        top = np.percentile(gray[:, :int(H * 0.12)].reshape(T, -1), 60, axis=1)
+        bot = np.percentile(gray[:, int(H * 0.88):].reshape(T, -1), 60, axis=1)
+        mid = gray[:, int(H * 0.4):int(H * 0.6)].mean(axis=(1, 2))
+        lb = (top < 16) & (bot < 16) & (mid > 22)
+    lb_frac = float(lb.mean())
+    # campuran: pembicara & cuplikan berlatar hitam sama-sama muncul cukup lama (sekali berganti pun cukup,
+    # mis. pembicara sebagai pembuka lalu cuplikan sampai akhir)
+    runs_lb, runs_sp = _runs(lb), _runs(~lb)
+    mixed = (0.12 <= lb_frac <= 0.95 and len(runs_lb) >= 1 and len(runs_sp) >= 1
+             and max(b - a for a, b in runs_lb) >= 2 * fps and max(b - a for a, b in runs_sp) >= 2 * fps)
+    dbg["broll"] = dict(letterbox=round(lb_frac, 2), mixed=mixed)
+    if mixed:
+        runs_b = [(b - a) / fps for a, b in runs_lb]
+        first = (runs_sp[0][1] - runs_sp[0][0]) / fps if runs_sp[0][0] == 0 else 0.0
+        # cuplikan yang berjalan sampai akhir bagian yang dibaca: anggap panjang (bukan terpotong pendek)
+        if runs_lb[-1][1] >= T - 1:
+            runs_b[-1] = max(runs_b[-1], 15.0)
+        speaker = [(b - a) / fps for a, b in runs_sp if a > 0 and b < T]
+        style.update(broll=True, broll_fit="hitam",
+                     broll_len=round(float(np.clip(np.median(runs_b), 0.5, 15)), 1),
+                     broll_every=round(float(np.clip(np.median(speaker) if speaker else 1.0, 1, 60)), 1),
+                     broll_after=round(float(np.clip(first, 0, 60)), 1))
+        notes.append("Clip ini menyelipkan cuplikan lain (b-roll) berlatar hitam. Nero meniru ritmenya dengan klip "
+                     "dari Pustaka b-roll Anda; cuplikan aslinya tidak diambil.")
+    elif not still:
+        style["broll"] = False
 
     # ---- judul: teks diam di bagian atas pada detik-detik awal
-    w0 = max(3, int(2.5 * fps))
+    w0 = max(3, int(2.5 * fps)) if not still else T
     pres0 = on[:w0].mean(axis=0)
     xor0 = (M[1:w0] ^ M[:w0 - 1]).mean(axis=2).mean(axis=0)
     rel0 = xor0 / (ink[:w0].mean(axis=0) + 1e-4)
-    still = (pres0 >= 0.8) & (rel0 < 0.25)
-    still[int(H * 0.55):] = False
-    title = max(_runs(still, gap=4, min_len=max(4, H // 90)), key=lambda r: r[1] - r[0], default=None)
+    stilltext = (pres0 >= 0.8) & (rel0 < 0.25)
+    stilltext[int(H * (0.35 if still else 0.55)):] = False
+    title = max(_runs(stilltext, gap=4, min_len=max(4, H // 90)), key=lambda r: r[1] - r[0], default=None)
     if title:
         ta, tb = title
         excluded[ta:tb] = True
         extra["title_band"] = (ta / H, tb / H)
         shown = on[:, ta:tb].mean(axis=1) > 0.35
-        gone = next((t for t in range(w0, T - 1) if not shown[t] and not shown[t + 1]), None)
-        if gone is None:
-            style["title_secs"] = 0
-        else:
-            secs_shown = gone / fps
-            style["title_secs"] = 3 if secs_shown <= 4.2 else 5 if secs_shown <= 7.5 else 0
+        extra["title_times"] = [round(t / fps, 2) for t in range(T) if shown[t]][:3]
+        if not still:
+            gone = next((t for t in range(w0, T - 1) if not shown[t] and not shown[t + 1]), None)
+            if gone is None:
+                style["title_secs"] = 0
+            else:
+                secs_shown = gone / fps
+                style["title_secs"] = 3 if secs_shown <= 4.2 else 5 if secs_shown <= 7.5 else 0
         style["title_on"] = True
         # warna kotak judul: baris tepat di atas & di bawah tulisan (bagian kotak tanpa huruf)
         tf = [t for t in range(T) if shown[t]][:12]
         cols = np.flatnonzero(M[tf, ta:tb].max(axis=(0, 1)))
-        pad = [y for y in list(range(ta - 5, ta - 1)) + list(range(tb + 2, tb + 6)) if 0 <= y < H]
-        if len(cols) and pad:
+        # sisi atas & bawah dinilai terpisah: pita tulisan bisa ikut menelan tepi kotak di salah satu sisi
+        sides = [[y for y in range(ta - 5, ta - 1) if 0 <= y < H], [y for y in range(tb + 2, tb + 6) if 0 <= y < H]]
+        best = None
+        for pad in sides:
+            if not (len(cols) and pad):
+                continue
             area = frames[tf][:, pad, cols[0]:cols[-1] + 1].reshape(1, -1, 3)
-            hsv = cv2.cvtColor(np.ascontiguousarray(area), cv2.COLOR_BGR2HSV)[0]
+            hsv_a = cv2.cvtColor(np.ascontiguousarray(area), cv2.COLOR_BGR2HSV)[0]
+            spread = float(np.median(np.abs(hsv_a[:, 2].astype(int) - np.median(hsv_a[:, 2]))))
+            if best is None or spread < best[0]:
+                best = (spread, hsv_a)
+        if best is not None:
+            hsv = best[1]
             h, s, v = (float(np.median(hsv[:, i])) for i in range(3))
             dbg["title_hsv"] = (h, s, v, ta, tb)
             if v >= 190 and s <= 60:
@@ -1980,13 +2579,21 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
                 style["title_bg"] = "kuning"
             elif v <= 90:
                 style["title_bg"] = "hitam"
+        lines_t = _runs(on[tf, ta:tb].mean(axis=0) > 0.5, gap=1, min_len=2) if tf else []
+        if lines_t:
+            cap_t = float(np.median([b - a for a, b in lines_t]))
+            style["title_size"] = int(np.clip(round(cap_t * 1080 / short / _LINE_TO_FONT / 2) * 2, 36, 120))
+            style["title_pos"] = round(float(np.clip(ta / H - (34 + 0.25 * style["title_size"]) / OUT_H, 0.02, 0.4)), 3)
     else:
         style["title_on"] = False
 
-    # ---- subtitle: pita teks yang isinya sering berganti. Piksel teks yang hampir selalu ada
-    # (judul, tulisan di video aslinya) dibuang dulu supaya tidak ikut terhitung.
+    # ---- subtitle: pita teks yang isinya sering berganti (gambar diam: pita teks di luar judul). Piksel teks
+    # yang hampir selalu ada (judul, tulisan di video aslinya) dibuang dulu supaya tidak ikut terhitung.
     C = _caption_masks(frames)
-    Dm = C & ~(C.mean(axis=0) >= 0.5)
+    Dm = C.copy() if still else C & ~(C.mean(axis=0) >= 0.5)
+    kin = _kinetic_signal(Dm, excluded, H)
+    dbg["kinetic"] = round(kin, 2)
+    extra["kinetic"] = round(kin, 2)
     dink = Dm.mean(axis=2)
     presence = (dink > 0.03).mean(axis=0)
     rel = (Dm[1:] ^ Dm[:-1]).mean(axis=2).mean(axis=0) / (dink.mean(axis=0) + 1e-4)
@@ -1996,7 +2603,7 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
     bands = []
     for a, b in _runs(cand, gap=3, min_len=max(4, H // 80)):
         pr = presence[a:b]
-        if float(np.average(rel[a:b], weights=pr)) >= 0.3:
+        if still or float(np.average(rel[a:b], weights=pr)) >= 0.3:
             bands.append((float(pr.sum()), a, b))
     strong = [x for x in bands if x[0] >= 0.5 * max(bands)[0]] if bands else []
     n_lines = 0.0
@@ -2005,9 +2612,16 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
         per = [n for n in per if n]
         n_lines += float(np.median(per)) if per else 0.0
     dbg["bands"] = (len(strong), n_lines)
-    if n_lines >= 3:  # subtitle paling banyak 2 baris; lebih dari itu tulisan di video (paragraf)
+    kinetic = kin >= 0.35
+    if kinetic:
+        style["caption_mode"] = "kinetik"
+        _kinetic_measure(style, extra, Dm, frames, H, short, fps)
+        bands = []
+    elif not still and n_lines >= 3:  # subtitle paling banyak 2 baris; lebih dari itu tulisan di video (paragraf)
         notes.append("Banyak tulisan bergerak di video ini (bukan subtitle biasa), pengaturan subtitle tidak diubah.")
         bands = []
+    elif bands:
+        style["caption_mode"] = "biasa"
     if bands:
         _, a, b = max(bands)
         # pita diperlebar ~1 baris: kelompok yang terbungkus 2 baris & huruf tinggi yang jarang muncul ikut terbaca
@@ -2023,32 +2637,32 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
         for t in range(T):
             m = Dm[t, a:b]
             per_frame.append((t, m, _runs(m.mean(axis=1) > 0.03, gap=1, min_len=3)))
-        all_h = [lb - la for _, _, ls in per_frame for la, lb in ls]
+        all_h = [lb_ - la for _, _, ls in per_frame for la, lb_ in ls]
         med = float(np.median(all_h)) if all_h else 0.0
         found = []                                # (frame, mask pita, baris [(atas, bawah, garis dasar)])
         for t, m, lines in per_frame:
             # buang garis bising (terlalu tipis) dan gabungan subtitle + tulisan video (terlalu tinggi)
-            lines = [(la, lb) for la, lb in lines if 0.6 * med <= lb - la <= 1.7 * med]
+            lines = [(la, lb_) for la, lb_ in lines if 0.6 * med <= lb_ - la <= 1.7 * med]
             if lines:
-                found.append((t, m, [(la, lb, la + int(np.flatnonzero(
-                    m[la:lb].mean(axis=1) >= 0.35 * m[la:lb].mean(axis=1).max())[-1]))  # garis dasar
-                    for la, lb in lines]))
+                found.append((t, m, [(la, lb_, la + int(np.flatnonzero(
+                    m[la:lb_].mean(axis=1) >= 0.35 * m[la:lb_].mean(axis=1).max())[-1]))  # garis dasar
+                    for la, lb_ in lines]))
         # celah antarhuruf vs antarkata dipisah dari sebaran celah di clip ini sendiri (tiap font berbeda)
         gaps = []
         for _, m, ls in found:
-            for la, lb, _ in ls:
-                ink = _runs(m[la:lb].max(axis=0) > 0)
-                gaps += [s2 - e1 for (_, e1), (s2, _) in zip(ink, ink[1:])]
+            for la, lb_, _ in ls:
+                ink_r = _runs(m[la:lb_].max(axis=0) > 0)
+                gaps += [s2 - e1 for (_, e1), (s2, _) in zip(ink_r, ink_r[1:])]
         word_gap = _split_gaps(gaps, med)
         lines_h = [base + 1 - la for _, _, ls in found for la, _, base in ls]
         counts, centers, word_h, col_all = [], [], [], []
         for t, m, ls in found:
             nw, used = 0, []
-            for la, lb, base in ls:
+            for la, lb_, base in ls:
                 sub = m[la:base + 1] > 0
                 col_h = sub.shape[0] - sub.argmax(axis=0)       # tinggi huruf per kolom dari garis dasar
                 segs = []
-                for sa, sb in _runs(m[la:lb].max(axis=0) > 0, gap=int(word_gap), min_len=2):
+                for sa, sb in _runs(m[la:lb_].max(axis=0) > 0, gap=int(word_gap), min_len=2):
                     hs = col_h[sa:sb][sub[:, sa:sb].any(axis=0)]
                     if sb - sa >= 0.25 * med and len(hs) and hs.max() >= 0.45 * med:   # bukan bintik kecil
                         segs.append((sa, sb, hs))
@@ -2064,7 +2678,7 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
                 mid = [g for g in groups if abs((g[0][0] + g[-1][1]) / 2 - W / 2) <= 0.12 * W]
                 if not mid:
                     continue
-                used.append((la, lb))
+                used.append((la, lb_))
                 for sa, sb, hs in min(mid, key=lambda g: abs((g[0][0] + g[-1][1]) / 2 - W / 2)):
                     nw += 1
                     word_h.append(float(hs.max()))   # huruf tertinggi kata itu
@@ -2077,14 +2691,15 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
             extra["caption_times"] = [round(t / fps, 2) for t, _, _ in found]
             # tinggi kapital: kata ber-huruf tinggi (bukan kata huruf kecil saja); kata kunci yang dibesarkan sedikit
             cap = float(np.percentile(word_h, 80))
+            extra["cap"] = cap / short
             # huruf kecil: kebanyakan kolom huruf hanya setinggi huruf 'x'; HURUF BESAR: setinggi kapital
             r = np.concatenate(col_all) / cap
             xzone = float(np.mean((r >= 0.62) & (r <= 0.88)))
             dbg["sub"] = dict(band=(a, b), med=med, word_gap=round(word_gap, 1), cap=cap, xz=round(xzone, 2),
                               lines=np.percentile(lines_h, [10, 50, 90]).tolist(), counts=np.bincount(counts).tolist())
             style["captions"] = True
-            style["caption_size"] = int(np.clip(round(cap * 1920 / H / _LINE_TO_FONT / 2) * 2, 60, 120))
-            style["caption_pos"] = round(float(np.clip(np.median(centers) / H + _POS_OFFSET, 0.5, 0.82)), 2)
+            style["caption_size"] = int(np.clip(round(cap * 1080 / short / _LINE_TO_FONT / 2) * 2, 40, 200))
+            style["caption_pos"] = round(float(np.clip(np.median(centers) / H + _POS_OFFSET, 0.2, 0.88)), 2)
             # pengaturan = jumlah kata MAKSIMUM; tampilan sering lebih sedikit (kata panjang, akhir kalimat),
             # jadi pakai jumlah terbesar yang cukup sering muncul
             hist = np.bincount(np.clip(counts, 0, 4), minlength=5)[1:]
@@ -2095,55 +2710,98 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
                 style["caption_upper"] = False
             else:
                 notes.append("HURUF BESAR atau huruf kecil tidak bisa dipastikan, pengaturan itu tidak diubah.")
-            # warna sorotan: warna mencolok yang paling sering di antara piksel teks
-            px = np.concatenate([cv2.cvtColor(frames[t, a:b], cv2.COLOR_BGR2HSV)[Dm[t, a:b] > 0]
-                                 for t in range(0, T, 2)] or [np.zeros((0, 3), np.uint8)])
-            vivid = px[(px[:, 1] >= 140) & (px[:, 2] >= 150)]
-            style["caption_base"], style["caption_color"] = "putih", "putih"
-            if len(px) and len(vivid) >= 0.06 * len(px):
-                per_name: dict[str, int] = {}
-                for hb, n in enumerate(np.bincount((vivid[:, 0].astype(int) * 2) // 10, minlength=36)):
-                    name = _hue_name(hb * 10 + 5)
-                    per_name[name] = per_name.get(name, 0) + int(n)
-                ranked = sorted(per_name.items(), key=lambda kv: -kv[1])
-                style["caption_color"] = ranked[0][0]
-                # hampir semua huruf berwarna (dan lebih dari 1 kata per tampilan): warna dasarnya bukan putih
-                if len(vivid) >= 0.7 * len(px) and style["caption_words"] > 1:
-                    style["caption_base"] = ranked[0][0]
-                    if len(ranked) > 1 and ranked[1][1] >= 0.15 * len(vivid):
-                        style["caption_color"] = ranked[1][0]
+            _caption_colors(style, frames, Dm, a, b, T)
             box = _highlight_box(frames, [t for t, _, _ in found], a, b, med)
             dbg["box"] = box
             if box:
                 style["caption_highlight"], style["caption_color"] = "kotak", box
-            if presence[a:b].max() < 0.35:
+            if presence[a:b].max() < 0.35 and not still:
                 notes.append("Subtitle hanya sesekali terlihat, hasil subtitle mungkin kurang tepat.")
-    else:
+    elif not kinetic:
         notes.append("Subtitle bergaris tepi tidak terdeteksi, pengaturan subtitle tidak diubah.")
 
-    # ---- progress bar: garis di tepi bawah/atas yang memanjang seiring waktu
+    # ---- progress bar: garis di tepi bawah/atas yang memanjang seiring waktu (warna & tebal persis)
     def growing(row):
         pix = frames[:, row].astype(int)
         c0 = pix[-1, 2]
         same = np.abs(pix - c0).sum(axis=2) < 70
         lens = np.where(same.all(axis=1), W, np.argmin(same, axis=1))
         if lens[-1] < 0.12 * W or lens[-1] - lens[0] < 0.1 * W or np.ptp(lens) == 0:
-            return False
-        return float(np.corrcoef(np.arange(T), lens)[0, 1]) > 0.9
-    style["progress_bar"] = bool(growing(H - 2) or growing(1))
+            return None
+        return int(lens[-1]) if float(np.corrcoef(np.arange(T), lens)[0, 1]) > 0.9 else None
+    if not still:
+        bar = None
+        for row, step in ((H - 2, -1), (1, 1)):
+            length = growing(row)
+            if length:
+                bar = (row, step, length)
+                break
+        style["progress_bar"] = bool(bar)
+        if bar:
+            row, step, length = bar
+            color = np.median(frames[-1, row, 2:max(3, length - 2)].reshape(-1, 3), axis=0)
+            rows_n, y = 0, row
+            while 0 <= y < H and rows_n < H // 20:
+                seg = frames[-1, y, 2:max(3, length - 2)].astype(int)
+                if np.mean(np.abs(seg - color).sum(axis=1) < 70) < 0.8:
+                    break
+                rows_n += 1
+                y += step
+            # baris tepi (row 1 / H-2) belum dihitung satu baris di luarnya
+            style["progress_h"] = int(np.clip(round((rows_n + 1) * OUT_H / H), 2, 60))
+            style["progress_color"] = _rgb_name(color[::-1])
+            style["progress_pos"] = "atas" if step == 1 else "bawah"
 
-    # ---- tata letak
-    gray = frames.mean(axis=3, dtype=np.float32)
+    # ---- tata letak (hanya video tegak; untuk adegan campuran: dari bagian pembicara saja)
+    keep = ~excluded
+    idx = np.flatnonzero(~lb) if mixed else np.arange(T)
+    samples = idx[np.linspace(0, len(idx) - 1, min(10, len(idx))).astype(int)] if len(idx) else np.arange(T)[:1]
+    if vertical:
+        _layout_style(style, dbg, frames, gray, samples, keep, H, W, T)
+
+    # ---- warna: video hitam-putih terbaca pasti; warna lain hanya dicatat (dinilai AI bila ada)
+    rows = np.flatnonzero(keep[: H - 6])
+    hsv = np.stack([cv2.cvtColor(frames[t], cv2.COLOR_BGR2HSV) for t in samples])[:, rows]
+    bgr = frames[samples][:, rows].astype(np.float32)
+    color = {"sat": round(float(hsv[..., 1].mean()), 1),
+             "warm": round(float((bgr[..., 2] - bgr[..., 0]).mean()), 1),
+             "bright": round(float(hsv[..., 2].mean()), 1)}
+    dbg["color"] = color
+    if color["sat"] < 14:
+        style["filter"] = "hitamputih"
+
+    # ---- zoom: perbesaran mendadak (jump cut) atau maju-mundur pelan, beserta besarnya
+    motion = {"jumps_per_min": 0.0, "cuts_per_min": 0.0, "slow_zoom": False, "measured": False}
+    if not still:
+        motion = _motion_stats(frames[idx] if mixed and len(idx) >= 6 else frames, keep, fps)
+        dbg["motion"] = motion
+        if motion["jumps_per_min"] >= 3:
+            style["zoom"] = "hentak"
+            if motion.get("jump_scale"):
+                style["zoom_scale"] = round(float(np.clip(motion["jump_scale"], 1.05, 1.6)), 2)
+        elif motion["slow_zoom"]:
+            style["zoom"] = "halus"
+        elif motion["measured"]:
+            style["zoom"] = "tanpa"
+
+    notes.append("Musik, stiker, dan emoji tidak ikut ditiru.")
+    return {"style": style, "notes": notes, "seconds": round(T / fps, 1), "debug": dbg,
+            "measure": {**extra, "color": color, "motion": motion}}
+
+
+def _layout_style(style, dbg, frames, gray, samples, keep, H, W, T):
+    """Tata letak video tegak: dua orang, video utuh berlatar blur/hitam, ikuti wajah, atau potong tengah."""
+    import cv2
     # garis pemisah dua orang: baris gelap rata di tengah yang jelas lebih gelap dari sekitarnya
     # (pada video yang memang gelap, baris tengah yang gelap saja bukan tanda pemisah)
-    row_mean, row_std = gray.mean(axis=2), gray.std(axis=2)
-    hit = np.zeros(T, bool)
+    g = gray[samples]
+    row_mean, row_std = g.mean(axis=2), g.std(axis=2)
+    hit = np.zeros(len(samples), bool)
     for y in range(H // 2 - 3, H // 2 + 3):
         near = np.maximum(row_mean[:, max(0, y - 6)], row_mean[:, min(H - 1, y + 6)])
         hit |= (row_mean[:, y] < 45) & (row_std[:, y] < 20) & (near > row_mean[:, y] + 25)
     divider = float(hit.mean())
     both, single = 0, 0
-    samples = np.linspace(0, T - 1, min(10, T)).astype(int)
     try:
         yn = cv2.FaceDetectorYN.create(os.path.join(APP_DIR, "models", "face_yunet.onnx"), "", (W, H), 0.6, 0.3, 20)
         for t in samples:
@@ -2158,11 +2816,10 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
         pass
     # video utuh + latar blur / bar hitam: garis tepi lurus selebar layar di atas & bawah video,
     # di atasnya latar lebih gelap/buram (selisih ke bawah positif), di bawahnya kebalikannya
-    d = np.diff(gray[samples], axis=1)                                 # (n, H-1, W)
+    d = np.diff(g, axis=1)                                             # (n, H-1, W)
     up = (d > 4).mean(axis=(0, 2))
     down = (d < -4).mean(axis=(0, 2))
-    lap = np.array([np.abs(cv2.Laplacian(g, cv2.CV_32F)).mean(axis=1) for g in gray[samples]]).mean(axis=0)
-    keep = ~excluded
+    lap = np.array([np.abs(cv2.Laplacian(x, cv2.CV_32F)).mean(axis=1) for x in g]).mean(axis=0)
     tops = [y for y in range(int(H * 0.12), int(H * 0.45)) if keep[y] and up[y] >= 0.6]
     blur = None
     for y1 in tops:
@@ -2180,45 +2837,333 @@ def analyze_reference_style(path: str, fps: float = 3.0, secs: float = 40.0) -> 
     dbg["layout"] = dict(tops=tops, maxup=round(float(up[int(H * .12):int(H * .45)].max()), 2),
                          maxdown=round(float(down[int(H * .55):int(H * .88)].max()), 2),
                          divider=divider, both=both, single=single, blur=blur)
-    if divider >= 0.6 or both >= max(2, 0.5 * len(samples)):
+    n = len(samples)
+    if divider >= 0.6 or both >= max(2, 0.5 * n):
         style["layout"] = "split"
     elif blur:
         y1, y2 = blur
         rows = np.r_[0:max(1, y1 - 2), min(H - 1, y2 + 3):H]
         rows = rows[keep[rows]] if keep[rows].any() else rows
         # latar hitam polos (bukan blur): hampir semua piksel di luar video sangat gelap
-        dark = float(np.median(gray[samples][:, rows]))
+        dark = float(np.median(g[:, rows]))
         dbg["layout"]["outside"] = round(dark, 1)
         style["layout"] = "hitam" if dark < 16 else "blur"
-    elif single >= 0.4 * len(samples):
+    elif single >= 0.4 * n:
         style["layout"] = "face"
     else:
         style["layout"] = "center"
 
-    # ---- warna: video hitam-putih terbaca pasti; warna lain hanya dicatat (dinilai AI bila ada)
-    rows = np.flatnonzero(keep[: H - 6])
-    hsv = np.stack([cv2.cvtColor(frames[t], cv2.COLOR_BGR2HSV) for t in samples])[:, rows]
-    bgr = frames[samples][:, rows].astype(np.float32)
-    color = {"sat": round(float(hsv[..., 1].mean()), 1),
-             "warm": round(float((bgr[..., 2] - bgr[..., 0]).mean()), 1),
-             "bright": round(float(hsv[..., 2].mean()), 1)}
-    dbg["color"] = color
-    if color["sat"] < 14:
-        style["filter"] = "hitamputih"
 
-    # ---- zoom: perbesaran mendadak (jump cut) atau maju-mundur pelan
-    motion = _motion_stats(frames, keep, fps)
-    dbg["motion"] = motion
-    if motion["jumps_per_min"] >= 3:
-        style["zoom"] = "hentak"
-    elif motion["slow_zoom"]:
-        style["zoom"] = "halus"
-    elif motion["measured"]:
-        style["zoom"] = "tanpa"
+def _kinetic_signal(Dm, excluded, H) -> float:
+    """Seberapa yakin tulisan ini teks kinetik (0..1). Dua tanda, diambil yang terkuat:
+    - beda ukuran: >= 2 baris bertumpuk dengan tinggi huruf sangat berbeda (kata penting besar, kata sambung kecil);
+      subtitle biasa yang terbungkus 2 baris tingginya sama;
+    - tumbuh: blok tulisan bertambah satu baris sementara baris teratasnya diam di tempat (kata ditumpuk ke bawah).
+      Subtitle biasa mengganti seluruh kelompok kata, dan bloknya rata tengah sehingga baris atasnya ikut bergeser."""
+    contrast = growth = n = multi = 0
+    prev = None
+    for t in range(Dm.shape[0]):
+        prof = Dm[t].mean(axis=1)
+        prof[excluded] = 0
+        prof[: int(H * 0.12)] = 0
+        prof[int(H * 0.92):] = 0
+        lines = [(a, b) for a, b in _runs(prof > 0.008, gap=1, min_len=3)]
+        if not lines:
+            prev = None
+            continue
+        n += 1
+        hs = [b - a for a, b in lines]
+        if len(lines) >= 2 and lines[-1][1] - lines[0][0] <= 0.5 * H:
+            multi += 1
+            if max(hs) >= 1.45 * min(hs):
+                contrast += 1
+        if prev and len(lines) > len(prev) and abs(lines[0][0] - prev[0][0]) <= 2 and abs(lines[0][1] - prev[0][1]) <= 3:
+            growth += 1
+        prev = lines
+    if n < 4:
+        return 0.0
+    grow = growth / n if multi >= 0.4 * n else 0.0
+    return max(contrast / n, min(1.0, grow * 1.75))
 
-    notes.append("Musik, b-roll, stiker, dan emoji tidak ikut ditiru.")
-    return {"style": style, "notes": notes, "seconds": round(T / fps, 1), "debug": dbg,
-            "measure": {**extra, "color": color, "motion": motion}}
+
+def _kinetic_measure(style, extra, Dm, frames, H, short, fps):
+    """Ukuran (kata besar), posisi tengah blok, HURUF BESAR, dan warna teks kinetik."""
+    T = Dm.shape[0]
+    tall, centers, tops, bots, times = [], [], [], [], []
+    for t in range(T):
+        prof = Dm[t].mean(axis=1)
+        lines = _runs(prof > 0.008, gap=1, min_len=3)
+        lines = [(a, b) for a, b in lines if H * 0.12 <= a and b <= H * 0.92]
+        if len(lines) < 1:
+            continue
+        times.append(t)
+        tall.append(max(b - a for a, b in lines))
+        tops.append(lines[0][0])
+        bots.append(lines[-1][1])
+        centers.append((lines[0][0] + lines[-1][1]) / 2)
+    if not tall:
+        return
+    cap = float(np.percentile(tall, 80))
+    a, b = int(np.percentile(tops, 10)), int(np.percentile(bots, 90))
+    extra["caption_band"] = (a / H, b / H)
+    extra["caption_times"] = [round(t / fps, 2) for t in times]
+    extra["cap"] = cap / short
+    style["captions"] = True
+    style["caption_size"] = int(np.clip(round(cap * 1080 / short / _LINE_TO_FONT / 2) * 2, 40, 220))
+    style["caption_pos"] = round(float(np.clip(np.median(centers) / H, 0.2, 0.85)), 2)
+    # HURUF BESAR: bagian bawah baris (di bawah garis dasar) hampir kosong; huruf kecil punya g/j/p/y & huruf x
+    style["caption_upper"] = True
+    _caption_colors(style, frames, Dm, a, b, T)
+
+
+def _caption_colors(style, frames, Dm, a, b, T):
+    """Warna teks & sorotan dari piksel tulisan (nama warna bila dekat, selain itu hex). Diperhalus _exact."""
+    import cv2
+    px = np.concatenate([cv2.cvtColor(np.ascontiguousarray(frames[t, a:b]), cv2.COLOR_BGR2HSV)[Dm[t, a:b] > 0]
+                         for t in range(0, T, 2)] or [np.zeros((0, 3), np.uint8)])
+    vivid = px[(px[:, 1] >= 140) & (px[:, 2] >= 150)]
+    style["caption_base"], style["caption_color"] = "putih", "putih"
+    if len(px) and len(vivid) >= 0.06 * len(px):
+        per_name: dict[str, int] = {}
+        for hb, n in enumerate(np.bincount((vivid[:, 0].astype(int) * 2) // 10, minlength=36)):
+            name = _hue_name(hb * 10 + 5)
+            per_name[name] = per_name.get(name, 0) + int(n)
+        ranked = sorted(per_name.items(), key=lambda kv: -kv[1])
+        style["caption_color"] = ranked[0][0]
+        # hampir semua huruf berwarna (dan lebih dari 1 kata per tampilan): warna dasarnya bukan putih
+        if len(vivid) >= 0.7 * len(px) and style.get("caption_words", 3) > 1:
+            style["caption_base"] = ranked[0][0]
+            if len(ranked) > 1 and ranked[1][1] >= 0.15 * len(vivid):
+                style["caption_color"] = ranked[1][0]
+
+
+def _rgb_name(rgb, palette=None, tol: float = 28) -> str:
+    """Nama warna palet bila dekat (lebih rapi di halaman), selain itu hex persis "#rrggbb"."""
+    rgb = np.asarray(rgb, float)
+    pal = palette or CAPTION_COLORS
+    name, dist = min(((k, float(np.linalg.norm(rgb - np.asarray(v, float)))) for k, v in pal.items()),
+                     key=lambda kv: kv[1])
+    if dist <= tol:
+        return name
+    r, g, b = (int(np.clip(round(x), 0, 255)) for x in rgb)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+_TITLE_PALETTE = {"putih": (255, 255, 255), "kuning": (255, 221, 0), "hitam": (0, 0, 0), "merah": (232, 40, 40)}
+
+
+def _exact(res: dict, hires: list, title_frame) -> None:
+    """Pengukuran persis dari frame resolusi asli: warna teks/sorotan/garis tepi (hex), tebal garis tepi, tekstur
+    kasar, serta warna/ukuran kotak judul. Mengubah res["style"] di tempat; yang tidak yakin tidak diisi."""
+    style, m, dbg = res["style"], res["measure"], res["debug"]
+    if not hires:
+        return
+    band = m.get("caption_band")
+    if band and style.get("captions"):
+        crops = []
+        for f in hires:
+            h = f.shape[0]
+            y0, y1 = int(band[0] * h), max(int(band[0] * h) + 2, int(band[1] * h))
+            crops.append(f[y0:y1])
+        cap_px = (m.get("cap") or 0) * min(hires[0].shape[:2])
+        info = _text_exact(crops, cap_px)
+        dbg["exact"] = info
+        # warna persis: isi huruf putih/pucat dari piksel tak berwarna; warna mencolok hanya dari piksel yang
+        # hue-nya dekat warna terukur (jadi sorotan tidak tertukar dengan warna dasar yang juga mencolok)
+        base_name = style.get("caption_base", "putih")
+        if base_name == "putih" and info.get("base") is not None:
+            style["caption_base"] = _rgb_name(info["base"])
+        elif base_name in CAPTION_COLORS and base_name != "putih":
+            exact = _hue_color(info, base_name)
+            if exact is not None:
+                style["caption_base"] = _rgb_name(exact)
+        hl_name = style.get("caption_color", "putih")
+        if hl_name == "putih":
+            style["caption_color"] = style["caption_base"]
+        elif hl_name in CAPTION_COLORS:
+            exact = _hue_color(info, hl_name)
+            if exact is not None:
+                style["caption_color"] = _rgb_name(exact)
+        if info.get("stroke_ratio") is not None:
+            ratio = info["stroke_ratio"]
+            style["caption_stroke_ratio"] = round(ratio, 3)
+            style["caption_stroke"] = 0 if ratio <= 0 else 1 if ratio < 0.065 else 2 if ratio < 0.115 else 3
+            if info.get("stroke_color") is not None and ratio > 0:
+                sc = _rgb_name(info["stroke_color"], {"hitam": (0, 0, 0), "putih": (255, 255, 255)}, 60)
+                if sc not in ("hitam",):
+                    style["caption_stroke_color"] = sc if sc.startswith("#") else "#ffffff"
+        if info.get("texture") is not None:
+            style["caption_texture"] = bool(info["texture"])
+    tb, tf = m.get("title_band"), title_frame
+    if tb and tf is not None and style.get("title_on"):
+        h = tf.shape[0]
+        a, b = int(tb[0] * h), int(tb[1] * h)
+        pad = max(2, int(0.006 * h))   # baris kotak di antara tulisan & tepi kotak (tepi kotak judul ±26 px)
+        text_cols = slice(int(0.25 * tf.shape[1]), int(0.75 * tf.shape[1]))
+        # baris kotak di atas & di bawah tulisan dinilai terpisah; dipakai sisi yang warnanya paling rata
+        best = None
+        for rows in (np.r_[max(0, a - 2 * pad):max(1, a - pad)], np.r_[min(h - 1, b + pad):min(h, b + 2 * pad)]):
+            px = tf[rows, text_cols].reshape(-1, 3)[:, ::-1].astype(float)
+            if not len(px):
+                continue
+            med = np.median(px, axis=0)
+            uni = float(np.mean(np.linalg.norm(px - med, axis=1) < 40))
+            if best is None or uni > best[0]:
+                best = (uni, med, rows)
+        if best is None:
+            return
+        uniform, box, box_rows = best
+        inside = tf[a:b, text_cols].reshape(-1, 3)[:, ::-1].astype(float)
+        far = inside[np.linalg.norm(inside - box, axis=1) > 120]
+        dbg["title_exact"] = dict(box=box.round().tolist(), uniform=round(uniform, 2), text_px=len(far))
+        # tepi kotak: dari pita tulisan berjalan ke atas & ke bawah selama barisnya masih isi kotak (warna kotak
+        # atau warna tulisan). Ukuran dari jarak antarbaris di dalam kotak (renderer: 1,22 x ukuran) bila >= 2
+        # baris, selain itu tinggi tulisan satu baris (huruf kapital + kaki huruf ≈ 0,85 x ukuran)
+        if uniform >= 0.7 and len(far) >= 30:
+            txt = np.median(far, axis=0)
+            img = tf[:, text_cols].astype(float)[..., ::-1]
+            d_box = np.linalg.norm(img - box, axis=2)
+            d_txt = np.linalg.norm(img - txt, axis=2)
+            inside = (np.minimum(d_box, d_txt) < 75).mean(axis=1) >= 0.75   # tepi huruf berbaur dgn kotak
+            top, bot = a, min(h - 1, b)
+            while top > 0 and inside[top - 1] and a - top < h // 5:
+                top -= 1
+            while bot < h - 1 and inside[bot + 1] and bot - b < h // 5:
+                bot += 1
+            txt_rows = (d_box[top:bot + 1] > 120).mean(axis=1) > 0.01
+            lines = _runs(txt_rows, gap=0, min_len=max(3, h // 400))
+            if lines:
+                short = min(tf.shape[:2])
+                pitch = np.median(np.diff([la for la, _ in lines])) if len(lines) >= 2 else 0
+                size_px = pitch / 1.22 if pitch else (lines[0][1] - lines[0][0]) / 0.85
+                style["title_size"] = int(np.clip(round(size_px * 1080 / short / 2) * 2, 36, 120))
+                # renderer: kotak dimulai 8 px di bawah titik judul (title_pos)
+                style["title_pos"] = round(float(np.clip(top / h - 8 / OUT_H, 0.02, 0.4)), 3)
+        if uniform >= 0.7:   # baris di atas & bawah tulisan berwarna rata: memang kotak judul
+            style["title_bg"] = _rgb_name(box, _TITLE_PALETTE, 60)
+            if len(far) >= 30:
+                txt = np.median(far, axis=0)
+                auto = (10, 10, 10) if _light(tuple(box)) else (255, 255, 255)
+                if np.linalg.norm(txt - np.asarray(auto, float)) > 70:
+                    style["title_text"] = _rgb_name(txt, {"putih": (255, 255, 255)}, 1)
+
+
+def _text_exact(crops: list, cap_px: float) -> dict:
+    """Warna isi huruf, warna sorotan, tebal & warna garis tepi, dan tekstur kasar dari potongan pita subtitle."""
+    import cv2
+    out: dict = {}
+    fills, vivids, profiles, rings, holes = [], [], [], [], []
+    n_fill = 0
+    maxd = int(np.clip(cap_px * 0.3, 4, 40)) if cap_px else 12
+    for c in crops:
+        if c.size == 0:
+            continue
+        hsv = cv2.cvtColor(c, cv2.COLOR_BGR2HSV)
+        s, v = hsv[..., 1], hsv[..., 2]
+        dark = v <= 70
+        # semua piksel terang (huruf pucat seperti krem juga ikut utuh), lalu hanya bidang yang sebagian besar
+        # tepinya gelap (garis tepi huruf): bidang terang latar belakang tidak ikut terbaca sebagai huruf
+        fill = (v >= 185).astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(fill, connectivity=4)
+        ok = (st[:, cv2.CC_STAT_AREA] >= 12) & (st[:, cv2.CC_STAT_HEIGHT] >= max(4, cap_px * 0.25))
+        ok[0] = False
+        lab = np.where(ok[lab], lab, 0).astype(np.uint16 if n < 65535 else np.int32)
+        if n < 65535 and ok.any():
+            # isi huruf berwarna rata; bintik latar yang ramai (derau, tekstur gambar) tidak
+            on = lab > 0
+            idx, px = lab[on], c[on].astype(float)
+            cnt = np.maximum(np.bincount(idx, minlength=n), 1)
+            mean = np.stack([np.bincount(idx, weights=px[:, k], minlength=n) / cnt for k in range(3)], axis=1)
+            close = np.linalg.norm(px - mean[idx], axis=1) < 45
+            even = ok & (np.bincount(idx, weights=close, minlength=n) / cnt >= 0.8)
+            if st[even, cv2.CC_STAT_AREA].sum() >= 0.2 * st[ok, cv2.CC_STAT_AREA].sum():
+                ok = even
+                lab = np.where(ok[lab], lab, 0).astype(lab.dtype)
+            near = cv2.dilate(lab, np.ones((3, 3), np.uint8))
+            edge = (lab == 0) & (near > 0)
+            tot = np.bincount(near[edge], minlength=n)
+            frac = np.bincount(near[edge], weights=dark[edge], minlength=n) / np.maximum(tot, 1)
+            outlined = ok & (frac >= 0.5)
+            area = st[:, cv2.CC_STAT_AREA]
+            if area[outlined].sum() >= 0.2 * area[ok].sum():   # tanpa garis tepi: semua bidang tetap dipakai
+                ok = outlined
+        fill = ok[lab].astype(np.uint8)
+        if fill.sum() < 50:
+            continue
+        rgb = c[fill > 0][:, ::-1].astype(float)
+        sat = s[fill > 0]
+        n_fill += len(rgb)
+        fills.append(rgb[sat <= 110])
+        vivids.append((rgb[sat >= 140], hsv[..., 0][fill > 0][sat >= 140]))
+        # profil kegelapan di sekitar huruf per sisi (atas/bawah/kiri/kanan dari huruf). Garis tepi ada di
+        # semua sisi, bayangan hanya di satu-dua sisi (mis. kanan bawah), latar gelap juga sering hanya di satu sisi
+        dist, near_px = cv2.distanceTransformWithLabels((1 - fill).astype(np.uint8), cv2.DIST_L2, 5,
+                                                        labelType=cv2.DIST_LABEL_PIXEL)
+        zs = np.argwhere(fill > 0)          # urutan label = urutan piksel huruf (baris demi baris)
+        nearest = zs[np.clip(near_px - 1, 0, len(zs) - 1)]
+        yy, xx = np.indices(fill.shape)
+        vy, vx = nearest[..., 0] - yy, nearest[..., 1] - xx     # dari piksel ke huruf terdekat
+        sides = (vy >= np.abs(vx), -vy >= np.abs(vx), vx > np.abs(vy), -vx > np.abs(vy))
+        side_prof = []
+        for side in sides:
+            prof = []
+            for d in range(1, maxd + 1):
+                ring = side & (dist > d - 0.5) & (dist <= d + 0.5)
+                prof.append(float(dark[ring].mean()) if ring.sum() >= 20 else np.nan)
+            side_prof.append(prof)
+        profiles.append(side_prof)
+        rings.append((c, dist, dark))
+        closed = cv2.morphologyEx(fill, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        holes.append(float((closed & (1 - fill)).sum()) / max(1, fill.sum()))
+    if not profiles:
+        return out
+    base = np.concatenate(fills) if fills else np.zeros((0, 3))
+    # isi huruf tak berwarna harus bagian nyata dari tulisan; bila hampir semua huruf berwarna (mis. 1 kata
+    # per tampilan yang selalu disorot), warna dasarnya memang tidak terlihat
+    if len(base) >= 30 and len(base) >= 0.25 * n_fill:
+        out["base"] = np.median(base, axis=0)
+    out["vivid"] = np.concatenate([x for x, _ in vivids]) if vivids else np.zeros((0, 3))
+    out["hues"] = np.concatenate([h for _, h in vivids]) if vivids else np.zeros(0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)        # sisi tanpa cukup piksel = nan
+        per_side = np.nanmedian(np.array(profiles, float), axis=0)          # (4 sisi, maxd)
+    # sisi yang paling terang = tanpa bayangan; garis tepi tetap terlihat di sana
+    usable = [k for k in range(4) if not np.isnan(per_side[k, :3]).any()]
+    if not usable:
+        return out | {"holes": round(float(np.median(holes)), 3), "texture": float(np.median(holes)) >= 0.010}
+    side = min(usable, key=lambda k: float(np.nanmean(per_side[k])))
+    prof = np.nan_to_num(per_side[side], nan=0.0)
+    out["profile"] = [round(float(x), 2) for x in prof[:12]]
+    out["profile_side"] = ("atas", "bawah", "kiri", "kanan")[side]
+    # cincin 1 px pertama adalah tepi huruf yang berbaur (antialias), jadi dinilai dari yang terkuat di 2 px pertama
+    start = max(prof[0], prof[1] if len(prof) > 1 else 0)
+    if start < 0.35:
+        out["stroke_ratio"] = 0.0          # tidak ada garis tepi gelap di sekeliling huruf
+    elif start >= 0.7:
+        drop = next((d for d, x in enumerate(prof, 1) if d > 1 and x < 0.5), None)
+        if drop is not None and cap_px:   # latar gelap terus = tebal tidak bisa dipastikan
+            px = drop - 0.5
+            out["stroke_ratio"] = float(np.clip(px / (cap_px / _LINE_TO_FONT), 0.01, 0.3))
+            c, dist, dark = rings[0]
+            ring = (dist > 0.5) & (dist <= px) & dark
+            if ring.sum() >= 20:
+                out["stroke_color"] = np.median(c[ring][:, ::-1].astype(float), axis=0)
+    out["holes"] = round(float(np.median(holes)), 3)
+    out["texture"] = out["holes"] >= 0.010
+    return out
+
+
+def _hue_color(info: dict, name: str):
+    """Warna persis (RGB) dari piksel mencolok yang hue-nya dekat warna palet `name`, atau None."""
+    import colorsys
+    viv, hues = info.get("vivid"), info.get("hues")
+    if viv is None or len(viv) < 20:
+        return None
+    r, g, b = (x / 255 for x in CAPTION_COLORS[name])
+    target = colorsys.rgb_to_hsv(r, g, b)[0] * 180
+    d = np.abs(hues.astype(float) - target)
+    near = np.minimum(d, 180 - d) <= 14
+    return np.median(viv[near], axis=0) if near.sum() >= 20 else None
 
 
 def _highlight_box(frames, times, a, b, line_h) -> str | None:
@@ -2328,6 +3273,7 @@ def _motion_stats(frames, keep_rows, fps) -> dict:
 
     rows = np.flatnonzero(keep_rows)
     jumps = cuts = readable = 0
+    jump_scales: list[float] = []
     shot_start, drift = 0, []
     for t in range(T - 1):
         diff = float(cv2.absdiff(gray[t][rows], gray[t + 1][rows]).mean())
@@ -2336,6 +3282,7 @@ def _motion_stats(frames, keep_rows, fps) -> dict:
             readable += 1
         if diff > 8 and s is not None and abs(math.log(s)) > 0.06:
             jumps += 1
+            jump_scales.append(math.exp(abs(math.log(s))))
         elif diff > 14 and s is None:
             cuts += 1
             shot_start = t + 1
@@ -2350,4 +3297,6 @@ def _motion_stats(frames, keep_rows, fps) -> dict:
         d = np.abs(np.array(drift))
         out["slow_zoom"] = bool(np.median(d) > 0.012 and float(np.mean(d > 0.008)) > 0.6)
     out["measured"] = readable >= 0.5 * (T - 1)
+    if jump_scales:
+        out["jump_scale"] = round(float(np.median(jump_scales)), 3)
     return out

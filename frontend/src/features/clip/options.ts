@@ -33,6 +33,21 @@ export const CAPTION_COLORS: Record<string, string> = {
   hijau: "#39ff14",
 };
 
+/** Warna kotak judul (sama dengan TITLE_BOXES di engine.py). */
+export const TITLE_COLORS: Record<string, string> = {
+  putih: "#ffffff",
+  kuning: "#ffdd00",
+  merah: "#e82828",
+  hitam: "#000000",
+};
+
+/** Warna tampilan (nama palet atau hex persis "#rrggbb"); "" = tidak ada warna khusus. */
+export function colorHex(v: unknown, palette: Record<string, string> = { ...CAPTION_COLORS, ...TITLE_COLORS }) {
+  const s = String(v ?? "").toLowerCase();
+  if (palette[s]) return palette[s];
+  return /^#[0-9a-f]{6}$/.test(s) ? s : "";
+}
+
 /**
  * Font subtitle. `css` dipakai untuk menampilkan contoh hurufnya di halaman (berkas fontnya diambil dari
  * /api/clip/fonts/<kunci>), `hint` menjelaskan kesannya.
@@ -56,10 +71,12 @@ type Base = { key: keyof Style; label: string; hint?: string };
 export type StyleField =
   | (Base & { type: "bool" })
   | (Base & { type: "select"; options: Option<string | number>[] })
-  | (Base & { type: "range"; min: number; max: number; step: number; unit?: "%" | "px" })
+  | (Base & { type: "range"; min: number; max: number; step: number; unit?: "%" | "px" | "x" | "s" })
   | (Base & { type: "text"; placeholder: string })
-  | (Base & { type: "color" })
-  | (Base & { type: "font" });
+  /** palette: pilihan warna; extras: pilihan selain warna (mis. "" = Otomatis); semua juga bisa warna sendiri */
+  | (Base & { type: "color"; palette?: Record<string, string>; extras?: Option<string>[] })
+  | (Base & { type: "font" })
+  | (Base & { type: "broll" });
 
 export interface StyleGroup {
   id: string;
@@ -73,6 +90,16 @@ export const STYLE_GROUPS: StyleGroup[] = [
     label: "Subtitle",
     fields: [
       { key: "captions", label: "Subtitle otomatis", type: "bool" },
+      {
+        key: "caption_mode",
+        label: "Jenis subtitle",
+        type: "select",
+        hint: "Kinetik: kata muncul satu per satu dan bertumpuk, kata penting besar, kata sambung kecil.",
+        options: [
+          ["biasa", "Biasa (1-4 kata berganti)"],
+          ["kinetik", "Teks kinetik (bertumpuk)"],
+        ],
+      },
       { key: "caption_font", label: "Font", type: "font" },
       { key: "caption_base", label: "Warna teks", type: "color" },
       { key: "caption_color", label: "Warna sorotan", type: "color" },
@@ -120,12 +147,30 @@ export const STYLE_GROUPS: StyleGroup[] = [
           [3, "Tebal"],
         ],
       },
-      { key: "caption_size", label: "Ukuran", type: "range", min: 50, max: 130, step: 2, unit: "px" },
+      {
+        key: "kinetic_lines",
+        label: "Baris per tampilan (kinetik)",
+        type: "select",
+        options: [
+          [2, "2 baris"],
+          [3, "3 baris"],
+          [4, "4 baris"],
+        ],
+      },
+      { key: "caption_size", label: "Ukuran", type: "range", min: 40, max: 220, step: 2, unit: "px" },
       { key: "caption_pos", label: "Posisi dari atas", type: "range", min: 0.25, max: 0.85, step: 0.01, unit: "%" },
       { key: "caption_upper", label: "HURUF BESAR", type: "bool" },
       { key: "caption_emphasis", label: "Sorot kata kunci & angka", type: "bool" },
       { key: "caption_shadow", label: "Bayangan huruf", type: "bool" },
       { key: "caption_box", label: "Kotak gelap di belakang", type: "bool" },
+      { key: "caption_texture", label: "Tekstur kasar (cetakan usang)", type: "bool" },
+      {
+        key: "caption_stroke_color",
+        label: "Warna garis tepi",
+        type: "color",
+        palette: { putih: "#ffffff" },
+        extras: [["", "Hitam"]],
+      },
     ],
   },
   {
@@ -135,16 +180,12 @@ export const STYLE_GROUPS: StyleGroup[] = [
       { key: "title_on", label: "Judul/hook di atas", type: "bool" },
       {
         key: "title_bg",
-        label: "Gaya judul",
-        type: "select",
-        options: [
-          ["putih", "Kotak putih"],
-          ["kuning", "Kotak kuning"],
-          ["merah", "Kotak merah"],
-          ["hitam", "Kotak hitam"],
-          ["tanpa", "Tulisan saja (tanpa kotak)"],
-        ],
+        label: "Kotak judul",
+        type: "color",
+        palette: TITLE_COLORS,
+        extras: [["tanpa", "Tulisan saja"]],
       },
+      { key: "title_text", label: "Warna tulisan judul", type: "color", extras: [["", "Otomatis"]] },
       {
         key: "title_secs",
         label: "Tampilkan judul",
@@ -211,7 +252,10 @@ export const STYLE_GROUPS: StyleGroup[] = [
           [0.6, "Sedang (jeda > 0,6 dtk)"],
         ],
       },
+      { key: "zoom_scale", label: "Besar zoom hentak", type: "range", min: 1.04, max: 1.4, step: 0.01, unit: "x" },
       { key: "progress_bar", label: "Progress bar", type: "bool" },
+      { key: "progress_color", label: "Warna progress bar", type: "color", extras: [["", "Ikut sorotan"]] },
+      { key: "progress_h", label: "Tebal progress bar", type: "range", min: 4, max: 40, step: 1, unit: "px" },
       {
         key: "progress_pos",
         label: "Letak progress bar",
@@ -221,6 +265,32 @@ export const STYLE_GROUPS: StyleGroup[] = [
           ["atas", "Atas"],
         ],
       },
+    ],
+  },
+  {
+    id: "broll",
+    label: "B-roll",
+    fields: [
+      {
+        key: "broll",
+        label: "Sisipkan klip b-roll",
+        type: "bool",
+        hint: "Klip dari Pustaka b-roll disisipkan di antara pembicara; suara tetap dari video asli.",
+      },
+      {
+        key: "broll_fit",
+        label: "Tampilan b-roll",
+        type: "select",
+        options: [
+          ["hitam", "Utuh, latar hitam"],
+          ["blur", "Utuh, latar blur"],
+          ["penuh", "Memenuhi layar"],
+        ],
+      },
+      { key: "broll_after", label: "Pembicara dulu", type: "range", min: 0, max: 15, step: 0.5, unit: "s" },
+      { key: "broll_len", label: "Lama tiap b-roll", type: "range", min: 1, max: 15, step: 0.5, unit: "s" },
+      { key: "broll_every", label: "Pembicara di antaranya", type: "range", min: 1, max: 30, step: 0.5, unit: "s" },
+      { key: "broll", label: "Pustaka b-roll", type: "broll" },
     ],
   },
   {
@@ -248,15 +318,35 @@ export const STYLE_GROUPS: StyleGroup[] = [
   },
 ];
 
-export const STYLE_FIELDS: StyleField[] = STYLE_GROUPS.flatMap((g) => g.fields);
+/** Semua kolom gaya (tanpa pengelola pustaka b-roll, yang bukan nilai gaya tersendiri). */
+export const STYLE_FIELDS: StyleField[] = STYLE_GROUPS.flatMap((g) => g.fields).filter((f) => f.type !== "broll");
+
+/** Nama font sendiri yang diunggah pengguna (diisi style-store dari /api/clip/fonts). */
+export const USER_FONT_LABELS: Record<string, string> = {};
+
+/** Link akun/profil (bukan satu video), sama dengan _PROFILE_RE di engine.py. */
+const PROFILE_RE = [
+  /^https?:\/\/(www\.|m\.)?tiktok\.com\/@[^/?#]+\/?(\?.*)?$/i,
+  /^https?:\/\/(www\.|m\.)?youtube\.com\/(@[^/?#]+|channel\/[^/?#]+|c\/[^/?#]+|user\/[^/?#]+)(\/(shorts|videos)?)?\/?(\?.*)?$/i,
+  /^https?:\/\/(www\.)?instagram\.com\/(?!p\/|reel\/|reels\/|tv\/|stories\/)[^/?#]+\/?(reels\/?)?(\?.*)?$/i,
+];
+export const isProfileUrl = (url: string) => PROFILE_RE.some((r) => r.test(url.trim()));
 
 /** Nilai gaya dalam kata-kata, memakai label yang sama dengan kontrolnya. */
 export function describe(key: keyof Style, v: unknown): string {
   const f = STYLE_FIELDS.find((x) => x.key === key);
   if (f?.type === "bool") return v ? "ya" : "tidak";
   if (f?.type === "select") return f.options.find(([o]) => o === v)?.[1] ?? String(v);
-  if (f?.type === "font") return FONTS.find((x) => x.key === v)?.label ?? String(v);
+  if (f?.type === "font") return FONTS.find((x) => x.key === v)?.label ?? USER_FONT_LABELS[String(v)] ?? String(v);
   if (f?.type === "range" && f.unit === "%") return `${Math.round(Number(v) * 100)}%`;
+  if (f?.type === "range" && f.unit === "x") return `${Number(v).toFixed(2)}×`;
+  if (f?.type === "range" && f.unit === "s") return `${Number(v).toFixed(1)} dtk`;
+  if (f?.type === "color") {
+    const extra = f.extras?.find(([o]) => o === v)?.[1];
+    if (extra) return extra;
+    const named = Object.keys({ ...CAPTION_COLORS, ...TITLE_COLORS }).find((k) => k === v);
+    return named ?? String(v || "-");
+  }
   return String(v);
 }
 

@@ -3,6 +3,8 @@
 import {
   AlertTriangleIcon,
   ExternalLinkIcon,
+  FilmIcon,
+  ImageIcon,
   Loader2Icon,
   RotateCwIcon,
   SaveIcon,
@@ -15,18 +17,18 @@ import {
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { CommitInput } from "@/components/fields";
+import { CommitInput, SimpleSelect } from "@/components/fields";
 import { styleAI, useNero } from "@/components/nero/store";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import { api, post } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { API } from "./api";
-import { STYLE_GROUPS } from "./options";
+import { STYLE_GROUPS, isProfileUrl } from "./options";
 import { DetectedList, SaveStyleDialog, StyleControl, StylePreview, StyleThumb } from "./style-parts";
 import { useStyles } from "./style-store";
 import { useStore } from "./store";
@@ -95,7 +97,7 @@ function Editor() {
           <div className="grid grid-cols-1 gap-x-4 gap-y-3.5 sm:grid-cols-2">
             {group.fields.map((f) => (
               <StyleControl
-                key={f.key}
+                key={`${f.key}-${f.type}`}
                 field={f}
                 style={style}
                 onChange={(k, v) => patchStyle({ [k]: v } as Partial<Style>)}
@@ -169,59 +171,142 @@ function ReferenceBody() {
   );
 }
 
+/** Banyak clip yang dibaca sekaligus (sama dengan MAX_STYLE_REFS di api.py). */
+const MAX_REFS = 5;
+const isImage = (f: File) => f.type.startsWith("image/") || /\.(jpe?g|png|webp|bmp)$/i.test(f.name);
+
 function ReferenceForm() {
   const { startJob } = useStyles();
   const { localAI, setSettingsOpen } = useNero();
-  const [url, setUrl] = useState("");
+  const [text, setText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [perProfile, setPerProfile] = useState(3);
   const [busy, setBusy] = useState(false);
   const fileIn = useRef<HTMLInputElement>(null);
   const ai = styleAI(localAI);
   const ready = ai.ready;
   const wantsGemini = localAI?.provider === "gemini";
 
-  async function go(body: { url: string } | FormData) {
+  const urls = [...new Set(text.split(/[\s,]+/).filter((u) => /^https?:\/\//i.test(u)))];
+  const profiles = urls.filter(isProfileUrl);
+  const clips = urls.length - profiles.length + files.filter((f) => !isImage(f)).length;
+  const images = files.filter(isImage).length;
+  const tooMany = clips > MAX_REFS;
+  const empty = !urls.length && !files.length;
+
+  async function go() {
+    if (empty || tooMany || busy) return;
     setBusy(true);
     try {
-      await startJob(body);
-      setUrl("");
+      if (files.length) {
+        const fd = new FormData();
+        for (const f of files) fd.append("files", f);
+        fd.append("urls", urls.join("\n"));
+        fd.append("per_profile", String(perProfile));
+        await startJob(fd);
+      } else {
+        await startJob({ urls, per_profile: perProfile });
+      }
+      setText("");
+      setFiles([]);
     } catch {
     } finally {
       setBusy(false);
-      if (fileIn.current) fileIn.current.value = "";
     }
+  }
+
+  function addFiles(list: FileList | null) {
+    if (!list?.length) return;
+    setFiles((old) => {
+      const names = new Set(old.map((f) => f.name + f.size));
+      return [...old, ...Array.from(list).filter((f) => !names.has(f.name + f.size))];
+    });
+    if (fileIn.current) fileIn.current.value = "";
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-2">
-        <Input
+      <div className="flex flex-col gap-2">
+        <Textarea
           autoFocus
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && url.trim() && !busy && go({ url: url.trim() })}
-          placeholder="https://www.tiktok.com/@akun/video/..."
-          className="h-9 min-w-0 flex-1 basis-60"
-          aria-label="Link clip referensi"
-        />
-        <Button className="h-9" disabled={!url.trim() || busy} onClick={() => go({ url: url.trim() })}>
-          <SparklesIcon /> Baca gaya
-        </Button>
-        <Button variant="outline" className="h-9" disabled={busy} onClick={() => fileIn.current?.click()}>
-          <UploadIcon /> Pilih file
-        </Button>
-        <input
-          ref={fileIn}
-          type="file"
-          accept="video/*"
-          hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (!f) return;
-            const fd = new FormData();
-            fd.append("file", f);
-            go(fd);
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) go();
           }}
+          rows={3}
+          placeholder={
+            "Satu link per baris: clip TikTok / Reels / Shorts / YouTube biasa,\n" +
+            "atau link akun (mis. https://www.tiktok.com/@akun) untuk membaca beberapa video terbarunya."
+          }
+          className="min-h-20 resize-y text-sm"
+          aria-label="Link clip atau akun referensi"
         />
+        {files.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5">
+            {files.map((f, i) => (
+              <li
+                key={f.name + f.size}
+                className="flex max-w-56 items-center gap-1.5 rounded-full border bg-muted/60 py-0.5 pr-1 pl-2.5 text-xs"
+              >
+                {isImage(f) ? <ImageIcon className="size-3 flex-none" /> : <FilmIcon className="size-3 flex-none" />}
+                <span className="min-w-0 truncate" title={f.name}>
+                  {f.name}
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Buang ${f.name}`}
+                  onClick={() => setFiles((old) => old.filter((_, k) => k !== i))}
+                  className="rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+                >
+                  <XIcon className="size-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button className="h-9" disabled={empty || tooMany || busy} onClick={go}>
+            {busy ? <Loader2Icon className="animate-spin" /> : <SparklesIcon />} Baca gaya
+          </Button>
+          <Button variant="outline" className="h-9" disabled={busy} onClick={() => fileIn.current?.click()}>
+            <UploadIcon /> Tambah file
+          </Button>
+          {profiles.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs whitespace-nowrap text-muted-foreground">
+              Video per akun
+              <SimpleSelect
+                size="sm"
+                value={perProfile}
+                onChange={(v) => setPerProfile(Number(v))}
+                options={[
+                  [3, "3 terbaru"],
+                  [5, "5 terbaru"],
+                ]}
+                aria-label="Banyak video terbaru per akun"
+              />
+            </label>
+          )}
+          <span className={cn("ml-auto text-xs", tooMany ? "text-destructive" : "text-muted-foreground")}>
+            {tooMany
+              ? `Paling banyak ${MAX_REFS} clip sekaligus.`
+              : [
+                  clips && `${clips} clip`,
+                  profiles.length && `${profiles.length} akun`,
+                  images && `${images} gambar`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+          </span>
+          <input
+            ref={fileIn}
+            type="file"
+            accept="video/*,image/jpeg,image/png,image/webp"
+            multiple
+            hidden
+            onChange={(e) => addFiles(e.target.files)}
+          />
+        </div>
       </div>
       <div
         className={cn(
@@ -233,8 +318,9 @@ function ReferenceForm() {
         <div className="min-w-0 flex-1">
           {ai.kind === "gemini" ? (
             <p>
-              <b>Gemini siap</b> ({localAI?.gemini.model}). Gemini menonton 20 detik pertama clip, biasanya selesai
-              dalam 20–40 detik. Clip dikirim ke Google; bila kuota gratis habis, Nero memakai AI lokal.
+              <b>Gemini siap</b> ({localAI?.gemini.model}). Gemini menonton potongan awal clip (maks. 3 clip) dan
+              melihat screenshot, biasanya selesai dalam 20–60 detik. Potongan dikirim ke Google; bila kuota gratis
+              habis, Nero memakai AI lokal.
             </p>
           ) : ai.kind === "lokal" ? (
             <p>
@@ -262,14 +348,16 @@ function ReferenceForm() {
         )}
       </div>
       <ul className="grid gap-1.5 text-xs text-muted-foreground sm:grid-cols-2">
-        <li>✓ Pakai clip pendek vertikal (TikTok / Reels / Shorts) yang bersubtitle.</li>
+        <li>✓ Boleh beberapa clip sekaligus: gayanya digabung (nilai tengah & yang paling sering).</li>
+        <li>✓ Clip vertikal, horizontal, atau persegi; screenshot JPG/PNG juga bisa.</li>
+        <li>✓ Teks kinetik, warna persis (#kode), garis tepi, tekstur, dan sisipan b-roll ikut ditiru.</li>
         <li>
           {ai.kind === "gemini"
-            ? "✓ Hanya potongan kecil clip (20 detik, tanpa suara) yang dikirim ke Gemini."
+            ? "✓ Hanya potongan kecil clip (tanpa suara) yang dikirim ke Gemini."
             : "✓ Dibaca di komputer Anda; video tidak dikirim ke layanan AI mana pun."}
         </li>
-        <li>✓ Semua hasil bacaan tersimpan di Gaya saya, bisa dipilih kapan saja.</li>
-        <li>✗ Musik, b-roll, stiker & emoji tidak ikut ditiru.</li>
+        <li>✓ Font yang sama persis: tambahkan berkas fontnya di Atur gaya → Font sendiri.</li>
+        <li>✗ Musik, stiker & emoji tidak ikut ditiru. Klip b-roll diambil dari pustaka Anda sendiri.</li>
       </ul>
     </div>
   );
@@ -323,7 +411,8 @@ function JobResult() {
           <span className="text-xs text-muted-foreground">Nama gaya (tersimpan di Gaya saya)</span>
           <CommitInput value={name} onCommit={rename} maxLength={40} className="h-9 font-semibold" />
           <span className="truncate text-[11px] text-muted-foreground" title={r.title}>
-            Dari &ldquo;{r.title}&rdquo; · {r.seconds} detik pertama dibaca
+            Dari &ldquo;{r.title}&rdquo;
+            {r.refs && r.refs > 1 ? ` · ${r.refs} referensi digabung` : ""} · {r.seconds} detik dibaca
           </span>
         </div>
         {r.ai ? (
@@ -406,6 +495,7 @@ function Detail({ s }: { s: StyleEntry }) {
   const [name, setName] = useState(s.name);
   const active = library?.active_id === s.id;
   const url = s.source?.url;
+  const urls = s.source?.urls?.length ? s.source.urls : url ? [url] : [];
 
   async function rename(v: string) {
     try {
@@ -432,9 +522,9 @@ function Detail({ s }: { s: StyleEntry }) {
   }
 
   async function reread() {
-    if (!url) return;
+    if (!urls.length) return;
     try {
-      await startJob({ url, replace_id: s.id });
+      await startJob({ urls, replace_id: s.id });
       setDetail(null);
       setRefOpen(true);
     } catch {}
@@ -476,6 +566,7 @@ function Detail({ s }: { s: StyleEntry }) {
               ) : (
                 <span className="text-foreground">{s.source.title || "file"}</span>
               )}
+              {s.source.count && s.source.count > 1 ? ` · ${s.source.count} referensi digabung` : ""}
             </p>
           )}
           {s.detected?.length ? (
@@ -495,7 +586,7 @@ function Detail({ s }: { s: StyleEntry }) {
                 Pakai gaya ini
               </Button>
             )}
-            {url && !s.preset && (
+            {urls.length > 0 && !s.preset && (
               <Button
                 variant="outline"
                 onClick={reread}

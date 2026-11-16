@@ -16,6 +16,13 @@ DEFAULT_STYLE = {
     "caption_font": "impact", "caption_base": "putih", "caption_emphasis": False, "cut_pauses": 0,
     "caption_highlight": "warna", "caption_anim": "pop", "caption_stroke": 2, "caption_shadow": True,
     "caption_box": False, "zoom": "tanpa", "filter": "asli",
+    # tiruan persis: biasa | kinetik (kata bertumpuk beda ukuran), tekstur kasar, tebal & warna garis tepi persis
+    # (rasio 0 = pakai tingkat caption_stroke), warna tulisan judul & progress bar ("" = otomatis), besar zoom hentak
+    "caption_mode": "biasa", "caption_texture": False, "kinetic_lines": 3, "caption_stroke_ratio": 0,
+    "caption_stroke_color": "", "title_text": "", "progress_color": "", "progress_h": 14, "zoom_scale": 1.14,
+    # sisipan b-roll dari Pustaka b-roll pengguna: pembicara `broll_after` dtk, lalu b-roll `broll_len` dtk
+    # bergantian dengan pembicara `broll_every` dtk; broll_fit: hitam | penuh | blur
+    "broll": False, "broll_every": 5, "broll_len": 2.5, "broll_after": 3, "broll_fit": "hitam",
 }
 PERSONAL_KEYS = ("handle", "handle_pos", "loudnorm")
 
@@ -80,6 +87,12 @@ PRESETS = [
        "Huruf tinggi Anton dengan sorotan pink, warna video lebih cerah, zoom hentak.",
        caption_font="anton", caption_color="pink", caption_words=2, caption_size=100, caption_emphasis=True,
        filter="cerah", zoom="hentak", title_bg="hitam"),
+    _p("kinetik-kasar", "Kinetik Kasar",
+       "Kata muncul satu per satu dan bertumpuk, kata penting besar, huruf tinggi bertekstur kasar. Gaya edit "
+       "motivasi/podcast yang ramai di TikTok.",
+       caption_mode="kinetik", caption_font="bebas", caption_size=170, caption_stroke=0, caption_shadow=True,
+       caption_texture=True, caption_highlight="tanpa", caption_color="putih", caption_pos=0.5,
+       title_on=False, progress_bar=False),
     _p("hitam-putih", "Hitam Putih",
        "Video hitam-putih dengan subtitle kuning menyala dan latar hitam. Dramatis.",
        caption_font="bebas", caption_color="kuning", caption_base="kuning", caption_highlight="tanpa",

@@ -90,7 +90,7 @@ Kartu **2. Gaya video** berisi:
 
 - **Gaya aktif**: dipakai untuk semua video, kecuali video yang diberi gaya sendiri. **Atur detail** membuka pengaturan lengkap dengan pratinjau langsung di sebelahnya; setiap perubahan tersimpan otomatis. **Simpan** menyimpan gaya aktif ke Gaya saya.
 - **Tiru gaya dari clip**: baca gaya editing dari clip orang lain (lihat bagian berikut).
-- **Gaya saya**: semua gaya yang pernah Anda baca dari clip atau simpan sendiri. **Siap pakai**: 11 gaya bawaan (Klasik Kuning, Tegas Hijau, Kotak Ungu, Karaoke Biru, Satu Kata Cepat, Minimalis Putih, Gaya Berita, Sinematik, Santai Lucu, Neon Pink, Hitam Putih). Klik gambar untuk memakainya; tombol **ⓘ** di pojok gambar untuk melihat detail, mengganti nama, membaca ulang, atau menghapus.
+- **Gaya saya**: semua gaya yang pernah Anda baca dari clip atau simpan sendiri. **Siap pakai**: 12 gaya bawaan (Klasik Kuning, Tegas Hijau, Kotak Ungu, Karaoke Biru, Satu Kata Cepat, Minimalis Putih, Gaya Berita, Sinematik, Santai Lucu, Neon Pink, Hitam Putih, Kinetik Kasar). Klik gambar untuk memakainya; tombol **ⓘ** di pojok gambar untuk melihat detail, mengganti nama, membaca ulang, atau menghapus.
 
 Watermark @akun, letaknya, dan perataan volume adalah milik Anda: tidak berubah saat gaya diganti.
 
@@ -98,28 +98,40 @@ Pilihan di **Atur detail**:
 
 | Bagian | Pilihan |
 |---|---|
-| Subtitle | Font (Impact, Anton, Bebas Neue, Montserrat, Poppins, Arial Black, Segoe UI Black, Bahnschrift, Verdana, Georgia, Comic Sans; contohnya tampil dengan huruf aslinya), warna teks & warna sorotan (9 warna), **cara menyorot kata** (kata berwarna, kotak berwarna di belakang kata, karaoke, tanpa sorotan), kata per tampilan (1–4), **animasi muncul** (pop, memantul, naik perlahan, tanpa), **garis tepi** (tanpa/tipis/sedang/tebal), ukuran, posisi, HURUF BESAR, sorot kata kunci & angka, bayangan, kotak gelap di belakang subtitle |
-| Judul | Ada/tidak, kotak putih/kuning/merah/hitam atau tulisan saja, lama tampil, **ukuran**, **posisi** |
-| Video & efek | Tata letak (ikuti wajah, dua orang, video utuh + latar blur, **video utuh + latar hitam**, potong tengah), **zoom** (pelan maju-mundur, atau **zoom hentak** yang berganti dekat/jauh di akhir kalimat seperti jump cut), **filter warna** (cerah, hangat, dingin, sinematik, pudar, hitam putih), hapus jeda diam, progress bar di bawah atau **di atas** |
+| Subtitle | **Jenis subtitle**: biasa (1–4 kata berganti) atau **teks kinetik** (kata muncul satu per satu dan bertumpuk; kata penting besar, kata sambung kecil; 2–4 baris per tampilan). Font (Impact, Anton, Bebas Neue, Montserrat, Poppins, Arial Black, Segoe UI Black, Bahnschrift, Verdana, Georgia, Comic Sans, plus **Font sendiri** .ttf/.otf; contohnya tampil dengan huruf aslinya), warna teks & warna sorotan (9 warna atau **warna sendiri** lewat pemilih warna / kode `#rrggbb`), **cara menyorot kata** (kata berwarna, kotak berwarna di belakang kata, karaoke, tanpa sorotan), kata per tampilan (1–4), **animasi muncul** (pop, memantul, naik perlahan, tanpa), **garis tepi** (tanpa/tipis/sedang/tebal) dan warnanya, ukuran (40–220), posisi, HURUF BESAR, sorot kata kunci & angka, bayangan, kotak gelap di belakang subtitle, **tekstur kasar** (seperti cetakan usang) |
+| Judul | Ada/tidak, warna kotak (putih/kuning/merah/hitam atau warna sendiri) atau tulisan saja, warna tulisan judul, lama tampil, **ukuran**, **posisi** |
+| Video & efek | Tata letak (ikuti wajah, dua orang, video utuh + latar blur, **video utuh + latar hitam**, potong tengah), **zoom** (pelan maju-mundur, atau **zoom hentak** yang berganti dekat/jauh di akhir kalimat seperti jump cut, dengan besar zoom yang bisa diatur), **filter warna** (cerah, hangat, dingin, sinematik, pudar, hitam putih), hapus jeda diam, progress bar di bawah atau **di atas** beserta warna & tebalnya |
+| B-roll | **Sisipkan klip b-roll** dari **Pustaka b-roll** di antara pembicara (suara tetap dari video asli): pembicara dulu berapa detik, lama tiap b-roll, jeda pembicara di antaranya, dan tampilannya (utuh berlatar hitam, utuh berlatar blur, atau memenuhi layar). Tambahkan klip sendiri di **Pustaka b-roll**; Nero memilih acak untuk tiap sisipan. Pakai hanya klip yang boleh Anda gunakan |
 | Watermark & suara | Watermark @akun di bawah atau di atas, ratakan volume suara |
 
 **Sorot kata kunci**: angka dan kata pemancing perhatian (rahasia, ternyata, juta, gagal, dll.) selalu berwarna sorotan dan sedikit lebih besar. **Hapus jeda**: diam lebih dari 0,3 atau 0,6 detik dibuang otomatis; audio tetap sinkron dan `.srt` ikut menyesuaikan.
 
 ### Tiru gaya dari clip referensi (AI lokal gratis)
 
-Klik **Tiru gaya dari clip**, tempel link clip yang gaya editannya ingin ditiru (TikTok/Reels/Shorts) lalu tekan **Baca gaya**, atau **Pilih file**. Pembacaan berjalan di latar belakang (jendelanya boleh ditutup) dalam dua lapis:
+Klik **Tiru gaya dari clip**, isi referensinya, lalu tekan **Baca gaya**. Referensi boleh berupa:
 
-1. **Pengukuran piksel** (selalu, tanpa AI): posisi & ukuran subtitle, jumlah kata per tampilan, HURUF BESAR, warna teks & sorotan, judul (ada/tidak, warna kotak, lama tampil), progress bar, tata letak (termasuk latar hitam), **zoom hentak / zoom pelan**, dan video hitam-putih.
-2. **AI lokal gratis** (bila sudah disiapkan): melihat beberapa frame, potongan area subtitle, dan lembar contoh font Nero, lalu menilai **jenis font**, **cara menyorot kata** (warna/kotak/karaoke), garis tepi, bayangan, kotak gelap, gaya judul, nuansa warna, plus memberi **nama** dan **ringkasan** gayanya.
+- **Link clip** (TikTok, Reels, Shorts, atau video YouTube biasa), satu per baris. **Beberapa clip sekaligus** (maks. 5): gayanya digabung, angka diambil nilai tengahnya dan pilihan diambil yang paling sering, sehingga hasilnya gaya khas sebuah akun, bukan kebetulan satu video.
+- **Link akun/profil** (mis. `https://www.tiktok.com/@akun`, `https://www.youtube.com/@channel`, profil Instagram): Nero membaca **3 atau 5 video terbaru** akun itu (pilih di **Video per akun**). YouTube memakai tab Shorts dulu.
+- **File** lewat **Tambah file**: video (vertikal, **horizontal**, atau persegi; video dengan latar hitam atas-bawah juga terbaca) dan/atau **screenshot JPG/PNG**. Screenshot cukup untuk warna, ukuran, posisi, dan judul; animasi & zoom hanya terbaca dari video.
 
-Angka hasil pengukuran selalu didahulukan; AI mengisi yang tidak bisa diukur. Di hasilnya, setiap pengaturan diberi tanda **UKUR** (diukur dari piksel) atau **AI**. Semua hasil bacaan **otomatis tersimpan di Gaya saya**, jadi bisa dipilih lagi kapan saja; tekan **Pakai gaya ini** untuk langsung memakainya. Gaya dari link bisa **dibaca ulang** (mis. setelah AI lokal disiapkan) lewat tombol **ⓘ** → **Baca ulang**.
+Pembacaan berjalan di latar belakang (jendelanya boleh ditutup) dalam dua lapis:
+
+1. **Pengukuran piksel** (selalu, tanpa AI): posisi & ukuran subtitle, jumlah kata per tampilan, HURUF BESAR, **teks kinetik** (kata bertumpuk), **warna persis** teks & sorotan (kode `#rrggbb` bila bukan warna palet), **tebal & warna garis tepi**, **tekstur kasar**, judul (ada/tidak, **warna kotak & tulisan persis**, ukuran, posisi, lama tampil), progress bar (warna & tebal), tata letak (termasuk latar hitam), **zoom hentak / zoom pelan** (beserta besarnya), video hitam-putih, dan **sisipan b-roll** (pembicara bergantian dengan klip berlatar hitam: kapan mulai, berapa lama, seberapa sering). Pengukuran persis memakai frame resolusi asli.
+2. **AI gratis** (Gemini atau AI lokal, bila sudah disiapkan): melihat frame, potongan area subtitle, dan lembar contoh font (termasuk **font sendiri** Anda), lalu menilai **jenis font**, **cara menyorot kata** (warna/kotak/karaoke), jenis subtitle, tekstur, b-roll, bayangan, kotak gelap, gaya judul, nuansa warna, plus memberi **nama** dan **ringkasan** gayanya. Gemini menonton potongan awal maks. 3 clip dan melihat screenshot.
+
+Angka hasil pengukuran selalu didahulukan; AI mengisi yang tidak bisa diukur. Di hasilnya, setiap pengaturan diberi tanda **UKUR** (diukur dari piksel) atau **AI**. Semua hasil bacaan **otomatis tersimpan di Gaya saya**, jadi bisa dipilih lagi kapan saja; tekan **Pakai gaya ini** untuk langsung memakainya. Gaya dari link bisa **dibaca ulang** (mis. setelah AI disiapkan) lewat tombol **ⓘ** → **Baca ulang**; yang dibaca ulang hanya link-nya (file yang dulu dipilih tidak disimpan).
+
+**Supaya hasilnya sama persis:**
+
+- **Font**: AI hanya bisa memilih font yang ada di Nero. Bila tahu font clip referensi (mis. dari keterangan pembuatnya), unduh berkas .ttf/.otf-nya dari sumber yang sah, lalu **Atur detail → Subtitle → Font sendiri**. Font itu ikut dipakai AI saat membaca gaya berikutnya.
+- **B-roll**: Nero meniru *pola* sisipannya, bukan klipnya. Isi **Atur detail → B-roll → Pustaka b-roll** dengan klip yang boleh Anda pakai; tanpa klip di pustaka, video dirender tanpa sisipan.
 
 **Pilih AI-nya** di **Pengaturan → AI gratis untuk membaca & meniru gaya editing**:
 
 | | Google Gemini (disarankan) | AI lokal (Ollama) |
 |---|---|---|
 | Kepintaran | Model besar Google (Gemini 3.8 Flash) | Model kecil 2–4B |
-| Cara melihat | **Menonton videonya** (20 detik pertama), jadi animasi subtitle & zoom ikut terbaca | Beberapa gambar diam |
+| Cara melihat | **Menonton videonya** (20 detik pertama; 12 detik per clip bila beberapa clip), jadi animasi subtitle & zoom ikut terbaca | Beberapa gambar diam |
 | Butuh | Internet + API key gratis | Ollama + model di laptop |
 | Privasi | Potongan clip kecil tanpa suara dikirim ke Google; di paket gratis boleh dipakai Google untuk meningkatkan produknya | Video tidak keluar dari laptop |
 | Batas | Kuota gratis harian (cukup untuk pemakaian biasa) | Tidak ada |
@@ -147,15 +159,16 @@ Kunci hanya disimpan di komputer Anda (`data/settings.json`) dan tidak pernah di
 
 Video tidak dikirim ke internet: AI berjalan di komputer Anda. Setelah membaca, model dilepas dari memori GPU dalam 1 menit supaya transkrip video tetap memakai GPU. Bila kedua model terpasang, **Otomatis** memakai yang 4B; pilih yang lain di **Model yang dipakai**. Server lain yang meniru API OpenAI (mis. LM Studio di `http://127.0.0.1:1234`) juga bisa dipakai: isi **Alamat server** di Pengaturan.
 
-Batasannya: hanya untuk video vertikal 9:16, dan pengukuran paling akurat untuk subtitle ber-outline hitam (gaya TikTok umumnya). Musik, b-roll, stiker, dan emoji tidak ditiru. AI kecil kadang salah menebak font atau warna, jadi periksa pratinjaunya; semua pengaturan bisa diubah di **Atur detail**. Bila video aslinya banyak tulisan (slide, berita), hasil subtitle/judul bisa keliru.
+Batasannya: tata letak (ikuti wajah, dsb.) hanya dibaca dari video vertikal; dari video horizontal/persegi yang dibaca subtitle, judul, warna, dan zoom-nya. Pengukuran paling akurat untuk subtitle bergaris tepi atau berbayangan (gaya TikTok umumnya). Musik, stiker, dan emoji tidak ditiru; isi klip b-roll juga tidak (hanya polanya). AI kecil kadang salah menebak font atau warna, jadi periksa pratinjaunya; semua pengaturan bisa diubah di **Atur detail**. Bila video aslinya banyak tulisan (slide, berita), hasil subtitle/judul bisa keliru. Link akun yang privat atau butuh masuk akun memerlukan cookies browser (Pengaturan umum), sama seperti mengunduh video.
 
 Setelah semua clip selesai, tekan **🧹 Hapus video sumber** untuk menghemat disk (video asli bisa ratusan MB). Hasil render tetap aman, tetapi clip proyek itu tidak bisa dirender ulang.
 
 ### Kemampuan Clip Maker
 
 - Deteksi momen menarik otomatis (hook kalimat pembuka, pertanyaan, kata kunci emosional, energi suara, kepadatan bicara)
-- Subtitle otomatis gaya TikTok: 1–4 kata per tampilan, sorotan warna / kotak / karaoke, animasi muncul
-- 11 gaya siap pakai, pustaka **Gaya saya**, dan tiru gaya dari clip referensi dengan AI lokal gratis
+- Subtitle otomatis gaya TikTok: 1–4 kata per tampilan atau teks kinetik bertumpuk, sorotan warna / kotak / karaoke, animasi muncul, warna persis, tekstur kasar, font sendiri
+- 12 gaya siap pakai, pustaka **Gaya saya**, dan tiru gaya dari clip, akun, atau screenshot referensi dengan AI gratis
+- Sisipan b-roll dari pustaka klip Anda sendiri
 - Efek video: zoom hentak / zoom pelan, filter warna, latar blur atau hitam
 - Crop pintar 9:16 mengikuti wajah pembicara dengan gerakan kamera halus
 - Tata letak **Dua orang (atas/bawah)** untuk podcast/wawancara: tiap orang mendapat setengah layar (dipilih otomatis bila terdeteksi dua wajah berdampingan)
@@ -507,7 +520,8 @@ Nero/
   fonts/            font subtitle gratis (lisensi SIL OFL, berkas OFL-*.txt)
   tests/            tes otomatis
   output/           HASIL ANDA, satu subfolder per fitur (output/clip = video clip)
-  data/             pengaturan (settings.json), catatan nero.log, dan data setiap fitur (data/clip = proyek & transkrip)
+  data/             pengaturan (settings.json), catatan nero.log, dan data setiap fitur (data/clip = proyek & transkrip,
+                    data/clip/fonts = font sendiri, data/clip/broll = pustaka b-roll)
 ```
 
 ## Mengubah tampilan (khusus pengembang)

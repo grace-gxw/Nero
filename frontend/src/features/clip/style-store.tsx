@@ -6,9 +6,9 @@ import { toast } from "sonner";
 import { api, post } from "@/lib/api";
 
 import { API } from "./api";
-import { FONTS, fontFamily } from "./options";
+import { FONTS, USER_FONT_LABELS, fontFamily } from "./options";
 import { useStore } from "./store";
-import type { StyleEntry, StyleJob, StyleLibrary } from "./types";
+import type { BrollItem, StyleEntry, StyleJob, StyleLibrary, UserFont } from "./types";
 
 interface StyleStore {
   library: StyleLibrary | null;
@@ -21,7 +21,7 @@ interface StyleStore {
   apply: (id: string) => Promise<void>;
   /** pembacaan gaya dari clip referensi yang sedang / terakhir berjalan */
   job: StyleJob | null;
-  startJob: (body: { url: string; replace_id?: string } | FormData) => Promise<void>;
+  startJob: (body: Record<string, unknown> | FormData) => Promise<void>;
   cancelJob: () => void;
   clearJob: () => void;
   editorOpen: boolean;
@@ -30,6 +30,12 @@ interface StyleStore {
   setRefOpen: (v: boolean) => void;
   detail: StyleEntry | null;
   setDetail: (s: StyleEntry | null) => void;
+  /** font sendiri (.ttf/.otf) yang diunggah pengguna */
+  userFonts: UserFont[];
+  loadFonts: () => Promise<void>;
+  /** pustaka klip b-roll (null = belum dimuat) */
+  broll: BrollItem[] | null;
+  loadBroll: () => Promise<void>;
 }
 
 const Ctx = createContext<StyleStore | null>(null);
@@ -51,6 +57,30 @@ export function StyleProvider({ children }: { children: React.ReactNode }) {
   const [refOpen, setRefOpen] = useState(false);
   const [detail, setDetail] = useState<StyleEntry | null>(null);
   const seen = useRef<string | null>(null);
+  const [userFonts, setUserFonts] = useState<UserFont[]>([]);
+  const [broll, setBroll] = useState<BrollItem[] | null>(null);
+
+  const loadFonts = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/fonts`);
+      if (!r.ok) return;
+      const fonts = ((await r.json()) as { fonts: UserFont[] }).fonts;
+      for (const f of fonts) USER_FONT_LABELS[f.key] = f.label;
+      setUserFonts(fonts);
+    } catch {}
+  }, []);
+
+  const loadBroll = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/broll`);
+      if (r.ok) setBroll(((await r.json()) as { items: BrollItem[] }).items);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(loadFonts, 0);
+    return () => window.clearTimeout(t);
+  }, [loadFonts]);
 
   const loadLibrary = useCallback(async () => {
     try {
@@ -85,7 +115,7 @@ export function StyleProvider({ children }: { children: React.ReactNode }) {
     [find, loadLibrary, loadSettings],
   );
 
-  const startJob = useCallback(async (body: { url: string; replace_id?: string } | FormData) => {
+  const startJob = useCallback(async (body: Record<string, unknown> | FormData) => {
     seen.current = null;
     const r = await post<{ ok: boolean; id: string }>(`${API}/style-jobs`, body);
     setJob({ id: r.id, status: "proses", stage: "Memulai...", progress: 0, error: "", result: null });
@@ -147,18 +177,22 @@ export function StyleProvider({ children }: { children: React.ReactNode }) {
         setRefOpen,
         detail,
         setDetail,
+        userFonts,
+        loadFonts,
+        broll,
+        loadBroll,
       }}
     >
-      <FontFaces />
+      <FontFaces user={userFonts} />
       {children}
     </Ctx.Provider>
   );
 }
 
 /** Font subtitle dimuat dari Nero supaya contoh huruf di halaman sama persis dengan hasil render. */
-function FontFaces() {
-  const css = FONTS.map(
-    (f) => `@font-face{font-family:"${fontFamily(f.key)}";src:url(${API}/fonts/${f.key});font-display:swap}`,
-  ).join("\n");
+function FontFaces({ user }: { user: UserFont[] }) {
+  const css = [...FONTS, ...user]
+    .map((f) => `@font-face{font-family:"${fontFamily(f.key)}";src:url(${API}/fonts/${f.key});font-display:swap}`)
+    .join("\n");
   return <style>{css}</style>;
 }

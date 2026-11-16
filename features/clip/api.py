@@ -7,6 +7,7 @@ Proyek disimpan di data/clip/projects, hasil render di output/clip.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import queue
@@ -422,7 +423,8 @@ def do_render(pid, cid, token):
             c["render_progress"] = round(x, 3)
 
         core.render_clip(os.path.join(pdir(pid), p["source"]), c["start"], c["end"], out, words,
-                         style, c.get("title", "") if style.get("title_on", True) else "", progress=prog)
+                         style, c.get("title", "") if style.get("title_on", True) else "", progress=prog,
+                         broll_files=broll_files() if style.get("broll") else None)
         # waktu subtitle .srt mengikuti video hasil (bisa lebih pendek bila jeda dibuang)
         keep, rel = core.clip_timeline(words, c["start"], c["end"], style)
         core.write_srt(rel, 0, sum(m - k for k, m in keep) / core.OUT_FPS, out.rsplit(".", 1)[0] + ".srt")
@@ -983,7 +985,10 @@ style_jobs: dict[str, dict] = {}
 _style_slot = threading.Semaphore(1)   # satu pembacaan dalam satu waktu (model AI memakai banyak memori)
 
 
-def _run_style_job(jid, url, path, title, use_ai, replace_id):
+MAX_STYLE_REFS = 5   # clip (dari link/akun/file) per pembacaan; semua gambar dihitung satu referensi
+
+
+def _run_style_job(jid, urls, videos, images, names, use_ai, replace_id, per_profile):
     job = style_jobs[jid]
     tmp = os.path.join(DATA, "style_ref", jid)
 
@@ -999,18 +1004,53 @@ def _run_style_job(jid, url, path, title, use_ai, replace_id):
         stage("Menunggu giliran...", 0.01)
         with _style_slot:
             s = load_settings()
-            if url:
-                stage("Mengunduh clip referensi...", 0.05)
-                info = core.download_reference(url, tmp, s.get("cookies_browser") or None, video=True)
-                path, title = info["path"], info["title"]
-            res = style_ai.analyze(path, ai=s, use_ai=use_ai and s.get("local_ai_on", True), stage=stage,
-                                   alive=alive)
+            cookies = s.get("cookies_browser") or None
+            warns, targets, accounts = [], [], []
+            for u in urls:                       # link akun: diganti beberapa video terbarunya
+                if core.is_profile_url(u):
+                    stage("Mengambil video terbaru dari akun...", 0.03)
+                    try:
+                        got = core.expand_profile(u, per_profile, cookies)
+                        targets += got
+                        accounts.append(u)
+                    except Exception as e:
+                        warns.append(f"Akun {u[:60]}: {e}"[:300])
+                else:
+                    targets.append(u)
+            room = MAX_STYLE_REFS - len(videos)
+            if len(targets) > room:
+                warns.append(f"Hanya {MAX_STYLE_REFS} clip pertama yang dibaca.")
+                targets = targets[:max(0, room)]
+            paths, titles = list(videos), list(names)
+            for i, u in enumerate(targets, 1):
+                stage(f"Mengunduh clip referensi {i}/{len(targets)}...", 0.03 + 0.12 * i / max(1, len(targets)))
+                try:
+                    info = core.download_reference(u, os.path.join(tmp, f"u{i}"), cookies, video=True)
+                    paths.append(info["path"])
+                    titles.append(info["title"])
+                except Cancelled:
+                    raise
+                except Exception as e:
+                    msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
+                    warns.append(f"Clip {u[:60]} gagal diunduh ({msg[:120]})")
+            if not paths and not images:
+                raise RuntimeError(" · ".join(warns) or "tidak ada clip yang bisa dibaca")
+            res = style_ai.analyze(paths, images=images, ai=s, use_ai=use_ai and s.get("local_ai_on", True),
+                                   stage=stage, alive=alive)
         alive()
+        res["notes"] = warns + res["notes"]
+        n_refs = res.get("refs", 1)
+        if accounts and len(accounts) == len(urls) and not videos and not images:
+            title = f"{accounts[0].rstrip('/').split('/')[-1]} ({len(paths)} video)"
+        else:
+            first = titles[0] if titles else (f"{len(images)} gambar" if images else "referensi")
+            title = first if n_refs == 1 else f"{first} (+{n_refs - 1} referensi)"
         # gaya lengkap: yang terbaca menimpa gaya aktif sekarang, sisanya tetap
         detected = res["style"]
         full = look_of({**load_settings()["style"], **detected})
         ai = res.get("ai") or {}
-        meta = {"source": {"kind": "referensi", "title": str(title or "")[:150], "url": url or ""},
+        meta = {"source": {"kind": "referensi", "title": str(title or "")[:150], "url": urls[0] if urls else "",
+                           "urls": urls, "count": n_refs},
                 "detected": sorted(detected), "sources": res["sources"], "summary": ai.get("summary", ""),
                 "ai_model": ai.get("model", ""), "ai_provider": ai.get("provider", ""), "notes": res["notes"]}
         entry = None
@@ -1032,7 +1072,7 @@ def _run_style_job(jid, url, path, title, use_ai, replace_id):
     except Exception as e:
         traceback.print_exc()
         msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).replace("ERROR: ", "")
-        job.update(status="gagal", error=f"Gagal membaca clip referensi: {msg}"[:400])
+        job.update(status="gagal", error=f"Gagal membaca referensi: {msg}"[:400])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         if os.path.exists(tmp):
@@ -1041,31 +1081,51 @@ def _run_style_job(jid, url, path, title, use_ai, replace_id):
 
 @bp.post("/style-jobs")
 def start_style_job():
-    """Mulai membaca gaya dari link atau file clip referensi. Hasilnya otomatis masuk "Gaya saya".
-    Body: {url, use_ai, replace_id} atau multipart (file, use_ai)."""
+    """Mulai membaca gaya dari referensi. Hasilnya otomatis masuk "Gaya saya".
+    JSON: {url | urls (satu per baris; link akun boleh), per_profile, use_ai, replace_id}
+    multipart: files (video dan/atau gambar, boleh banyak; "file" juga diterima), urls, use_ai, per_profile."""
     jid = uuid.uuid4().hex[:10]
     tmp = os.path.join(DATA, "style_ref", jid)
-    f = request.files.get("file")
-    body = request.form if f else (request.get_json(silent=True) or {})
+    files = [f for f in request.files.getlist("files") + request.files.getlist("file") if f and f.filename]
+    body = request.form if request.files else (request.get_json(silent=True) or {})
     use_ai = str(body.get("use_ai", "true")).lower() not in ("false", "0", "")
     replace_id = body.get("replace_id") or None
-    url, path, title = None, None, None
-    if f:
+    raw = body.get("urls") or body.get("url") or ""
+    if isinstance(raw, list):
+        raw = "\n".join(map(str, raw))
+    urls = list(dict.fromkeys(u for u in re.split(r"[\s,]+", str(raw)) if u.startswith("http")))
+    try:
+        per_profile = max(1, min(MAX_STYLE_REFS, int(body.get("per_profile") or 3)))
+    except (TypeError, ValueError):
+        per_profile = 3
+    if not urls and not files:
+        return jsonify(error="Tempel link clip/akun referensi, atau pilih file video/gambar."), 400
+    videos, images, names = [], [], []
+    for k, f in enumerate(files):
+        ext = os.path.splitext(f.filename or "")[1].lower()
+        if ext in core.IMAGE_EXT:
+            kind = images
+        elif ext in core.BROLL_EXT or not ext:
+            kind = videos
+        else:
+            return jsonify(error=f"Jenis file '{f.filename}' tidak didukung (pakai video atau JPG/PNG)."), 400
         os.makedirs(tmp, exist_ok=True)
-        path = os.path.join(tmp, "ref" + (os.path.splitext(f.filename or "")[1].lower() or ".mp4"))
+        path = os.path.join(tmp, f"f{k}{ext or '.mp4'}")
         f.save(path)
-        title = os.path.splitext(f.filename or "file")[0]
-    else:
-        url = str(body.get("url") or "").strip()
-        if not url.startswith("http"):
-            return jsonify(error="Tempel link clip referensi atau pilih file video."), 400
+        kind.append(path)
+        if kind is videos:
+            names.append(os.path.splitext(f.filename or "file")[0])
+    if len(videos) + len([u for u in urls if not core.is_profile_url(u)]) > MAX_STYLE_REFS:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return jsonify(error=f"Paling banyak {MAX_STYLE_REFS} clip sekaligus."), 400
     for old in sorted(style_jobs, key=lambda k: style_jobs[k]["created"])[:-20]:
         if style_jobs[old]["status"] != "proses":
             style_jobs.pop(old, None)
+    label = urls[0] if urls else (names[0] if names else f"{len(images)} gambar")
     style_jobs[jid] = {"id": jid, "status": "proses", "stage": "Menunggu giliran...", "progress": 0,
-                       "error": "", "result": None, "cancel": False, "created": time.time(),
-                       "label": url or title}
-    threading.Thread(target=_run_style_job, args=(jid, url, path, title, use_ai, replace_id), daemon=True).start()
+                       "error": "", "result": None, "cancel": False, "created": time.time(), "label": label}
+    threading.Thread(target=_run_style_job, args=(jid, urls, videos, images, names, use_ai, replace_id, per_profile),
+                     daemon=True).start()
     return jsonify(ok=True, id=jid)
 
 
@@ -1082,9 +1142,162 @@ def cancel_style_job(jid):
     return jsonify(ok=True)
 
 
+# --------------------------------------------------------------------------
+# Font tambahan pengguna (data/clip/fonts) & pustaka b-roll (data/clip/broll)
+# --------------------------------------------------------------------------
+FONT_EXT = (".ttf", ".otf")
+
+
+def fonts_dir() -> str:
+    return os.path.join(DATA, "fonts")
+
+
+def broll_dir() -> str:
+    return os.path.join(DATA, "broll")
+
+
+def load_user_fonts() -> list[dict]:
+    path = os.path.join(fonts_dir(), "fonts.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return [x for x in data if isinstance(x, dict) and x.get("key") and x.get("file")]
+    except (OSError, ValueError):
+        return []
+
+
+def _save_user_fonts(items: list[dict]) -> None:
+    os.makedirs(fonts_dir(), exist_ok=True)
+    path = os.path.join(fonts_dir(), "fonts.json")
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+def sync_user_fonts() -> None:
+    """Beri tahu mesin font tambahan yang ada (dipanggil saat mulai & setelah berubah)."""
+    core.register_user_fonts({x["key"]: os.path.join(fonts_dir(), x["file"]) for x in load_user_fonts()})
+
+
+@bp.get("/fonts")
+def list_fonts():
+    return jsonify(fonts=[{"key": x["key"], "label": x.get("label") or x["key"]} for x in load_user_fonts()])
+
+
+@bp.post("/fonts")
+def add_font():
+    """Tambah font sendiri (.ttf/.otf), mis. font yang dipakai clip referensi, supaya hurufnya sama persis."""
+    from PIL import ImageFont
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify(error="Pilih berkas font (.ttf atau .otf)."), 400
+    ext = os.path.splitext(f.filename)[1].lower()
+    if ext not in FONT_EXT:
+        return jsonify(error="Font harus berkas .ttf atau .otf."), 400
+    data = f.read(26 * 1024 * 1024)
+    if len(data) > 25 * 1024 * 1024:
+        return jsonify(error="Berkas font terlalu besar (maks. 25 MB)."), 400
+    try:
+        family, sub = ImageFont.truetype(io.BytesIO(data), 40).getname()
+    except Exception:
+        return jsonify(error="Berkas ini bukan font yang bisa dibaca."), 400
+    label = f"{family} {sub}".strip() if sub and sub.lower() not in ("regular", "normal") else (family or "Font")
+    with styles_lock:
+        items = load_user_fonts()
+        base = "user-" + (re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:40] or "font")
+        key, k = base, 2
+        while any(x["key"] == key for x in items):
+            key, k = f"{base}-{k}", k + 1
+        os.makedirs(fonts_dir(), exist_ok=True)
+        with open(os.path.join(fonts_dir(), key + ext), "wb") as out:
+            out.write(data)
+        items.append({"key": key, "label": label[:60], "file": key + ext})
+        _save_user_fonts(items)
+    sync_user_fonts()
+    return jsonify(ok=True, font={"key": key, "label": label[:60]})
+
+
+@bp.delete("/fonts/<key>")
+def delete_font(key):
+    with styles_lock:
+        items = load_user_fonts()
+        x = next((i for i in items if i["key"] == key), None) or abort(404)
+        _save_user_fonts([i for i in items if i["key"] != key])
+    sync_user_fonts()
+    remove_later(remove_files(os.path.join(fonts_dir(), x["file"])))
+    return jsonify(ok=True)
+
+
+def broll_files() -> list[str]:
+    d = broll_dir()
+    if not os.path.isdir(d):
+        return []
+    return sorted(os.path.join(d, n) for n in os.listdir(d) if n.lower().endswith(core.BROLL_EXT)
+                  and os.path.isfile(os.path.join(d, n)))
+
+
+@bp.get("/broll")
+def list_broll():
+    items = []
+    for p in broll_files():
+        items.append({"name": os.path.basename(p), "size_mb": round(os.path.getsize(p) / 1e6, 1),
+                      "seconds": round(core._media_duration(p), 1)})
+    return jsonify(items=items, folder=broll_dir())
+
+
+@bp.post("/broll")
+def add_broll():
+    """Tambah klip b-roll (boleh banyak). Disisipkan saat render bila gaya menyalakan "Sisipan b-roll"."""
+    files = [f for f in request.files.getlist("files") + request.files.getlist("file") if f and f.filename]
+    if not files:
+        return jsonify(error="Pilih klip video untuk pustaka b-roll."), 400
+    os.makedirs(broll_dir(), exist_ok=True)
+    added = []
+    for f in files:
+        stem, ext = os.path.splitext(f.filename)
+        ext = ext.lower()
+        if ext not in core.BROLL_EXT:
+            return jsonify(error=f"'{f.filename}' bukan video yang didukung ({', '.join(core.BROLL_EXT)})."), 400
+        name, k = safe_name(stem, 60) + ext, 2
+        while os.path.exists(os.path.join(broll_dir(), name)):
+            name, k = f"{safe_name(stem, 56)}_{k}{ext}", k + 1
+        f.save(os.path.join(broll_dir(), name))
+        added.append(name)
+    return jsonify(ok=True, added=added)
+
+
+@bp.delete("/broll/<name>")
+def delete_broll(name):
+    path = os.path.join(broll_dir(), os.path.basename(name))
+    if not os.path.isfile(path):
+        abort(404)
+    remove_later(remove_files(path))
+    return jsonify(ok=True)
+
+
+@bp.get("/broll/<name>/thumb")
+def broll_thumb(name):
+    path = os.path.join(broll_dir(), os.path.basename(name))
+    if not os.path.isfile(path):
+        abort(404)
+    key = hashlib.sha1(f"{path}{os.path.getmtime(path)}".encode("utf-8")).hexdigest()[:16]
+    thumb = os.path.join(THUMBS, f"broll_{key}.jpg")
+    if not os.path.exists(thumb):
+        os.makedirs(THUMBS, exist_ok=True)
+        try:
+            core.run_ffmpeg(["-ss", f"{min(1.0, core._media_duration(path) / 2):.2f}", "-i", path, "-frames:v", "1",
+                             "-vf", "scale=240:-2", thumb])
+        except Exception:
+            abort(404)
+    return send_from_directory(THUMBS, os.path.basename(thumb), max_age=3600)
+
+
 @bp.get("/fonts/<key>")
 def font_file(key):
     """Berkas font subtitle, supaya pilihan font di halaman tampil dengan bentuk aslinya."""
+    x = next((i for i in load_user_fonts() if i["key"] == key), None)
+    if x:
+        return send_from_directory(fonts_dir(), x["file"], max_age=86400)
     if key not in core.CAPTION_FONTS:
         abort(404)
     file = core.CAPTION_FONTS[key][0]
@@ -1147,6 +1360,7 @@ def start():
     """Siapkan fitur: pindahkan data versi lama, muat proyek, jalankan pekerja."""
     migrate_legacy()
     load_projects()
+    sync_user_fonts()
     threading.Thread(target=worker, args=(analyze_q, "analyze"), daemon=True).start()
     threading.Thread(target=worker, args=(render_q, "render"), daemon=True).start()
 

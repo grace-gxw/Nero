@@ -73,7 +73,10 @@ export interface Style {
   caption_words: number;
   title_on: boolean;
   title_secs: number;
-  title_bg: "putih" | "kuning" | "hitam" | "merah" | "tanpa";
+  /** putih | kuning | hitam | merah | tanpa (tulisan saja) | "#rrggbb" (warna kotak persis hasil tiruan) */
+  title_bg: string;
+  /** warna tulisan judul persis ("" = otomatis) */
+  title_text: string;
   title_size: number;
   /** posisi judul (porsi tinggi layar dari atas) */
   title_pos: number;
@@ -99,6 +102,39 @@ export interface Style {
   caption_box: boolean;
   zoom: "tanpa" | "halus" | "hentak";
   filter: "asli" | "cerah" | "hangat" | "dingin" | "hitamputih" | "sinematik" | "pudar";
+  /** biasa (1-4 kata) | kinetik (kata muncul satu per satu & bertumpuk, beda ukuran) */
+  caption_mode: "biasa" | "kinetik";
+  /** tekstur kasar seperti cetakan usang */
+  caption_texture: boolean;
+  /** baris paling banyak per tampilan teks kinetik */
+  kinetic_lines: number;
+  /** tebal garis tepi persis sebagai bagian dari ukuran huruf (0 = pakai caption_stroke) */
+  caption_stroke_ratio: number;
+  /** warna garis tepi ("" = hitam) */
+  caption_stroke_color: string;
+  /** warna progress bar ("" = ikut warna sorotan) */
+  progress_color: string;
+  /** tebal progress bar (px pada video 1080x1920) */
+  progress_h: number;
+  /** besar perbesaran zoom hentak */
+  zoom_scale: number;
+  /** sisipkan klip dari Pustaka b-roll */
+  broll: boolean;
+  broll_every: number;
+  broll_len: number;
+  broll_after: number;
+  broll_fit: "hitam" | "penuh" | "blur";
+}
+
+export interface UserFont {
+  key: string;
+  label: string;
+}
+
+export interface BrollItem {
+  name: string;
+  size_mb: number;
+  seconds: number;
 }
 
 export type StyleSource = "ukur" | "ai";
@@ -110,7 +146,7 @@ export interface StyleEntry {
   style: Partial<Style>;
   summary?: string;
   preset?: boolean;
-  source?: { kind: "referensi" | "manual"; title?: string; url?: string };
+  source?: { kind: "referensi" | "manual"; title?: string; url?: string; urls?: string[]; count?: number };
   /** kunci gaya yang terbaca dari clip referensi */
   detected?: (keyof Style)[];
   /** asal tiap kunci yang terbaca: pengukuran piksel atau penilaian AI */
@@ -141,6 +177,8 @@ export interface StyleJobResult {
   sources: Partial<Record<keyof Style, StyleSource>>;
   notes: string[];
   seconds: number;
+  /** banyak referensi yang digabung (clip + kumpulan gambar) */
+  refs?: number;
   ai: null | { provider: "gemini" | "lokal"; model: string; name: string; summary: string };
   ai_missing?: boolean;
 }

@@ -115,15 +115,18 @@ def interact(inputs: list[dict], *, key: str, model: str = DEFAULT_MODEL, schema
 
 
 def chat_json(prompt: str, schema: dict, *, key: str, model: str = DEFAULT_MODEL, images: list[bytes] = (),
-              video: bytes | None = None, video_fps: float = 4.0, system: str = "", alive=None) -> dict:
-    """Pertanyaan + gambar JPEG + (opsional) video MP4 kecil, jawaban JSON sesuai skema."""
+              video: bytes | None = None, video_fps: float = 4.0, system: str = "", alive=None,
+              videos: list[bytes] = ()) -> dict:
+    """Pertanyaan + gambar JPEG + (opsional) video MP4 kecil, jawaban JSON sesuai skema.
+    videos: beberapa video sekaligus (Gemini 2.5 ke atas menerima sampai 10 video per permintaan)."""
     inputs = []
     if system:
         inputs.append({"type": "text", "text": system})
-    if video:
-        if len(video) > INLINE_LIMIT:
-            raise LocalAIError("Video contoh terlalu besar untuk dikirim ke Gemini.")
-        inputs.append({"type": "video", "data": base64.b64encode(video).decode("ascii"), "mime_type": "video/mp4",
+    clips = ([video] if video else []) + list(videos)
+    if sum(len(v) for v in clips) > INLINE_LIMIT:
+        raise LocalAIError("Video contoh terlalu besar untuk dikirim ke Gemini.")
+    for v in clips:
+        inputs.append({"type": "video", "data": base64.b64encode(v).decode("ascii"), "mime_type": "video/mp4",
                        "processing": {"type": "static", "fps": video_fps}})
     inputs += [{"type": "image", "data": base64.b64encode(x).decode("ascii"), "mime_type": "image/jpeg"}
                for x in images]
