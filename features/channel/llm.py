@@ -198,13 +198,16 @@ def _order(providers: list[str], cfg: ChannelConfig, s: dict) -> list[str]:
 
 def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], temperature: float, *,
                   cfg: ChannelConfig | None = None, settings: dict | None = None, allow_local: bool = True,
-                  providers: list[str] | None = None, check=None, log=None,
+                  providers: list[str] | None = None, check=None, usable=None, log=None,
                   calls: list[Call] | None = None) -> BaseModel:
     """Isi prompts/<prompt_name>.md, minta jawaban JSON, validasi dengan `schema`, fallback antar-provider.
 
     allow_local=False: provider lokal (Ollama) tidak dipakai, mis. untuk QC yang harus teliti.
     check(hasil) -> [pesan]: pemeriksaan isi tambahan (mis. jumlah kata). Bila ada pesan, diminta perbaikan
-    sekali; bila masih ada, hasilnya tetap dikembalikan (langkah berikutnya, mis. QC, yang memutuskan)."""
+    sekali; bila masih ada, hasilnya tetap dikembalikan (langkah berikutnya, mis. QC, yang memutuskan).
+    usable(hasil) -> bool: jawaban yang masih punya masalah `check` tetapi sama sekali tidak bisa dipakai (mis. riset
+    tanpa satu pun kandidat bersumber) tidak dikembalikan: provider itu dianggap gagal dan provider berikutnya
+    dicoba."""
     s = settings if settings is not None else common.load_settings()
     cfg = cfg or cfgmod.load_config(s)
     log = log or (lambda m: print(f"[channel] {m}"))
@@ -262,7 +265,8 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
             problems = list(check(result) or []) if check else []
             if problems and not checked:
                 checked = True
-                pending = (result, problems)
+                # hanya jawaban yang masih bisa dipakai yang boleh menjadi cadangan terakhir
+                pending = (result, problems) if usable is None or usable(result) else None
                 call.notes.append("isi belum memenuhi aturan, diminta perbaikan: " + "; ".join(problems))
                 log(f"LLM {prompt_name}: minta perbaikan ({'; '.join(problems)[:200]})")
                 prompt = base + "\n\n" + render_prompt("_validation_retry", {
@@ -270,6 +274,11 @@ def generate_json(prompt_name: str, variables: dict, schema: type[BaseModel], te
                     "previous": json.dumps(data, ensure_ascii=False)[:6000]})
                 attempt -= 1
                 continue
+            if problems and usable is not None and not usable(result):
+                # tetap tidak bisa dipakai setelah diminta perbaikan: coba provider berikutnya (tanpa cooldown,
+                # servernya menjawab)
+                call.error = "jawaban tidak bisa dipakai: " + "; ".join(problems)
+                break
             if problems:
                 call.notes.append("masih belum sempurna: " + "; ".join(problems))
                 log(f"LLM {prompt_name}: diterima dengan catatan ({'; '.join(problems)[:200]})")

@@ -465,5 +465,91 @@ class RingkasanAkhirRun(ChannelSandbox):
         self.assertTrue(last.endswith("selesai. dijalankan: research, manual_pack; dipakai ulang: script, qc, seo"), last)
 
 
+# --------------------------------------------------------------------------
+class JawabanTakTerpakai(FallbackLLM):
+    """15 Nov 2026: Gemini ringan dua kali menjawab riset tanpa kandidat bersumber; jawaban itu diterima "dengan
+    catatan" lalu riset gagal, padahal AI lain tersedia."""
+
+    def check(self, p):
+        return [] if p.message == "lengkap" else [f"isi '{p.message}' belum lengkap"]
+
+    def usable(self, p):
+        return p.message != "kosong"
+
+    def ask(self, gemini, groq, **kw):
+        calls, logs = [], []
+        with mock.patch("gemini_ai.interact", side_effect=gemini), \
+                mock.patch("local_ai.openai_chat_json", side_effect=groq):
+            got = llm.generate_json("ping", {}, Ping, 0.2, cfg=self.cfg, settings=self.settings, log=logs.append,
+                                    check=self.check, usable=self.usable, calls=calls, **kw)
+        return got, calls, logs
+
+    def test_tetap_kosong_setelah_perbaikan_pindah_ke_ai_lain(self):
+        asked = []
+
+        def gemini(inputs, **kw):
+            asked.append(inputs[0]["text"])
+            return '{"ok": true, "message": "kosong"}'
+
+        got, calls, logs = self.ask(gemini, lambda *a, **kw: {"ok": True, "message": "lengkap"})
+        self.assertEqual(got.message, "lengkap")
+        self.assertEqual([c.provider for c in calls], ["gemini", "groq"])
+        self.assertEqual(len(asked), 2)                                  # jawaban + satu permintaan perbaikan
+        self.assertIn("tidak bisa dipakai", calls[0].error)
+        self.assertNotIn(("gemini", "gemini-utama"), llm._cooldown)      # servernya menjawab: tanpa cooldown
+        self.assertFalse(any("diterima dengan catatan" in m for m in logs))
+
+    def test_semua_kosong_tetap_gagal(self):
+        with self.assertRaises(llm.LLMError) as e:
+            self.ask(lambda inputs, **kw: '{"ok": true, "message": "kosong"}',
+                     lambda *a, **kw: {"ok": True, "message": "kosong"})
+        self.assertIn("tidak bisa dipakai", str(e.exception))
+
+    def test_jawaban_kosong_bukan_cadangan(self):
+        answers = iter(['{"ok": true, "message": "kosong"}', LocalAIError("Gemini terlalu lama menjawab.")])
+
+        def gemini(inputs, model, **kw):
+            if model != "gemini-utama":
+                raise LocalAIError("Gemini terlalu lama menjawab.")
+            a = next(answers)
+            if isinstance(a, Exception):
+                raise a
+            return a
+
+        with self.assertRaises(llm.LLMError):                          # bukan jawaban "kosong" dengan catatan
+            self.ask(gemini, LocalAIError("groq mati"))
+
+    def test_kurang_sempurna_tetap_diterima(self):
+        got, calls, logs = self.ask(lambda inputs, **kw: '{"ok": true, "message": "sebagian"}',
+                                    lambda *a, **kw: {"ok": True, "message": "lengkap"})
+        self.assertEqual(got.message, "sebagian")                         # masih bisa dipakai: tidak pindah
+        self.assertEqual([c.provider for c in calls], ["gemini"])
+        self.assertTrue(any("diterima dengan catatan" in m for m in logs))
+
+
+class RisetMemeriksaKandidatBersumber(ChannelSandbox):
+    def test_riset_tanpa_kandidat_bersumber_tidak_terpakai(self):
+        from features.channel import research
+        from features.channel.schemas import ResearchDraft
+        from tests.test_channel_plan import cand, cfg_with_genre, draft, materials
+        seen = {}
+
+        def fake(name, variables, schema, temperature, *, check=None, usable=None, **kw):
+            if name == "research_queries":
+                return schema.model_validate({"queries": [{"id": "gurita"}, {"id": "paus"}]})
+            seen["check"], seen["usable"] = check, usable
+            return schema.model_validate(draft(cand("Gurita tiga jantung", [1])))
+
+        with mock.patch.object(llm, "generate_json", fake), \
+                mock.patch.object(research, "wikipedia_materials", return_value=materials()), \
+                mock.patch.object(research, "enrich", side_effect=lambda c, log=None: c):
+            research.run(cfg_with_genre(), date(2026, 11, 15), log=lambda m: None)
+        unsourced = ResearchDraft.model_validate(draft(cand("Tanpa sumber", [99]), cand("Juga tanpa", [0])))
+        one = ResearchDraft.model_validate(draft(cand("Gurita", [1]), cand("Tanpa sumber", [99])))
+        self.assertFalse(seen["usable"](unsourced))
+        self.assertTrue(seen["usable"](one))                             # kurang dari 3 tetap bisa dipakai
+        self.assertTrue(seen["check"](one))                              # tetapi diminta perbaikan dulu
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -250,8 +250,13 @@ def run(cfg: ChannelConfig, today: date, *, settings: dict | None = None, learni
                      f"buat {MIN_CANDIDATES}–5 kandidat dan isi source_ids dengan nomor bahan")]
         return []
 
+    def usable(draft: ResearchDraft) -> bool:
+        # tanpa satu pun kandidat bersumber riset pasti gagal: AI berikutnya dicoba (15 Nov 2026: Gemini ringan
+        # yang sedang penuh dua kali menjawab tanpa nomor bahan yang sah, padahal Groq tersedia)
+        return bool(build_candidates(draft, materials))
+
     draft = llm.generate_json("research", {**common_vars, "materials": _numbered(materials), "n": 5},
-                              ResearchDraft, cfg.llm.temperature_creative, check=check, **ask)
+                              ResearchDraft, cfg.llm.temperature_creative, check=check, usable=usable, **ask)
     candidates = build_candidates(draft, materials)
     rejected, keep = [], []
     for c in candidates:

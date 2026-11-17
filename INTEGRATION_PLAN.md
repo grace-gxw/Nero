@@ -432,4 +432,7 @@ Temuan Fase I-8 (dokumen resmi Microsoft & CPython + uji nyata, 13 Nov 2026):
   - Paket unggah manual kini menyebut saran jam tayang (18.00 WIB) dan jawaban penonton, karena tanpa upload API
     Nero tidak menjadwalkan apa pun.
 - Yang tetap menjadi tindakan pengguna: buka otomatis Nero, key Groq (sangat disarankan), Telegram, key stok/AI.
+- 15 Nov 2026: uji coba gagal di riset. Gemini utama timeout, Groq belum punya key, dan Gemini ringan (503 berulang)
+  dua kali menjawab tanpa satu pun kandidat bersumber; jawaban itu diterima "dengan catatan" lalu riset gagal. Kini
+  jawaban yang tidak bisa dipakai (`usable`) membuat AI berikutnya dicoba.
 
